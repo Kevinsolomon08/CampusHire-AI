@@ -1,0 +1,43 @@
+# app/core/config.py
+# Loads all environment variables for CampusHire via pydantic-settings.
+
+from __future__ import annotations
+
+from typing import List
+
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+    )
+
+    # Database
+    DATABASE_URL: str
+
+    # JWT
+    JWT_SECRET_KEY: str
+    JWT_ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+
+    # CORS — stored as a comma-separated string in .env, e.g.:
+    #   CORS_ORIGINS=http://localhost:5173,https://campushire.app
+    # We keep it as a plain str here so pydantic-settings does NOT try
+    # to JSON-decode it, then parse it ourselves in the validator below.
+    CORS_ORIGINS: str = "http://localhost:5173"
+
+    # File uploads
+    UPLOAD_DIRECTORY: str = "uploads"
+
+    @property
+    def cors_origins_list(self) -> List[str]:
+        """Return CORS_ORIGINS as a list, splitting on commas."""
+        return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
+
+
+# Singleton — import this everywhere.
+settings = Settings()
