@@ -1,7 +1,7 @@
 // src/pages/RecruiterJobsPage.jsx
 // Recruiter job listings table with status management (Publish/Close/Edit/Delete).
 
-import React, { useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   getRecruiterJobs,
@@ -25,10 +25,6 @@ export default function RecruiterJobsPage() {
   // Confirm delete modal state
   const [deleteConfirmJob, setDeleteConfirmJob] = useState(null)
 
-  useEffect(() => {
-    fetchJobs()
-  }, [page, statusFilter, searchTerm])
-
   const fetchJobs = async () => {
     setLoading(true)
     setErrorMessage('')
@@ -50,6 +46,10 @@ export default function RecruiterJobsPage() {
       setLoading(false)
     }
   }
+
+  useEffect(() => {
+    fetchJobs()
+  }, [page, statusFilter, searchTerm])
 
   const handlePublish = async (jobId) => {
     setActionLoadingId(jobId)
@@ -277,47 +277,89 @@ export default function RecruiterJobsPage() {
                     {job.package_lpa ? `${job.package_lpa} LPA` : 'Competitive'}
                   </td>
                   <td className="py-4 px-4">
-                    <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-bold bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300">
-                      {job.total_applicants} applied
-                    </span>
+                    {job.status === 'DRAFT' ? (
+                      <span
+                        title="Publish this job to start receiving applicants"
+                        aria-label={`${job.total_applicants || 0} applied (publish this job to start receiving applicants)`}
+                        className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-bold bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500 cursor-not-allowed"
+                      >
+                        {job.total_applicants || 0} applied
+                      </span>
+                    ) : (
+                      <Link
+                        to={`/recruiter/jobs/${job.id}/applicants`}
+                        title="View applicants"
+                        aria-label={`View ${job.total_applicants || 0} applicant${job.total_applicants === 1 ? '' : 's'} for ${job.title}`}
+                        className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-bold bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 transition underline-offset-2 hover:underline focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      >
+                        {job.total_applicants || 0} applied
+                      </Link>
+                    )}
                   </td>
                   <td className="py-4 px-4 text-xs text-gray-500">
                     {formatDate(job.deadline)}
                   </td>
-                  <td className="py-4 px-4 text-right space-x-2 whitespace-nowrap">
-                    {job.status === 'DRAFT' && (
-                      <button
-                        onClick={() => handlePublish(job.id)}
-                        disabled={actionLoadingId === job.id}
-                        className="px-3 py-1 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white transition disabled:opacity-50"
+                  <td className="py-4 px-4 text-right">
+                    <div className="flex items-center justify-end flex-wrap gap-1.5 sm:gap-2">
+                      {job.status === 'DRAFT' ? (
+                        <button
+                          type="button"
+                          disabled
+                          title="Publish this job to start receiving applicants"
+                          aria-label={`View applicants for ${job.title} (disabled - publish this job to start receiving applicants)`}
+                          className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500 border border-gray-200 dark:border-gray-800 cursor-not-allowed opacity-60"
+                        >
+                          View Applicants
+                        </button>
+                      ) : (
+                        <Link
+                          to={`/recruiter/jobs/${job.id}/applicants`}
+                          title={`View applicants for ${job.title}`}
+                          aria-label={`View applicants for ${job.title}`}
+                          className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:hover:bg-indigo-900/80 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 transition shadow-2xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        >
+                          View Applicants
+                        </Link>
+                      )}
+
+                      {job.status === 'DRAFT' && (
+                        <button
+                          onClick={() => handlePublish(job.id)}
+                          disabled={actionLoadingId === job.id}
+                          aria-label={`Publish ${job.title}`}
+                          className="px-3 py-1 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white transition disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                        >
+                          {actionLoadingId === job.id ? 'Publishing...' : 'Publish'}
+                        </button>
+                      )}
+
+                      {job.status === 'OPEN' && (
+                        <button
+                          onClick={() => handleClose(job.id)}
+                          disabled={actionLoadingId === job.id}
+                          aria-label={`Close ${job.title}`}
+                          className="px-3 py-1 rounded-lg text-xs font-semibold bg-rose-600 hover:bg-rose-700 text-white transition disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-rose-500"
+                        >
+                          {actionLoadingId === job.id ? 'Closing...' : 'Close'}
+                        </button>
+                      )}
+
+                      <Link
+                        to={`/recruiter/jobs/${job.id}`}
+                        aria-label={`Edit ${job.title}`}
+                        className="inline-block px-3 py-1 rounded-lg text-xs font-semibold border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition focus:outline-none focus:ring-2 focus:ring-indigo-500"
                       >
-                        {actionLoadingId === job.id ? 'Publishing...' : 'Publish'}
-                      </button>
-                    )}
+                        Edit
+                      </Link>
 
-                    {job.status === 'OPEN' && (
                       <button
-                        onClick={() => handleClose(job.id)}
-                        disabled={actionLoadingId === job.id}
-                        className="px-3 py-1 rounded-lg text-xs font-semibold bg-rose-600 hover:bg-rose-700 text-white transition disabled:opacity-50"
+                        onClick={() => setDeleteConfirmJob(job)}
+                        aria-label={`Delete ${job.title}`}
+                        className="px-2 py-1 rounded-lg text-xs font-semibold text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/50 transition focus:outline-none focus:ring-2 focus:ring-rose-500"
                       >
-                        {actionLoadingId === job.id ? 'Closing...' : 'Close'}
+                        Delete
                       </button>
-                    )}
-
-                    <Link
-                      to={`/recruiter/jobs/${job.id}`}
-                      className="inline-block px-3 py-1 rounded-lg text-xs font-semibold border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition"
-                    >
-                      Edit
-                    </Link>
-
-                    <button
-                      onClick={() => setDeleteConfirmJob(job)}
-                      className="px-2 py-1 rounded-lg text-xs font-semibold text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/50 transition"
-                    >
-                      Delete
-                    </button>
+                    </div>
                   </td>
                 </tr>
               ))}

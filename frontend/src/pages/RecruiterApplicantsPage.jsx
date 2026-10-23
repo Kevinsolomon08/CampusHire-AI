@@ -1,8 +1,8 @@
 // src/pages/RecruiterApplicantsPage.jsx
 // Recruiter's applicants table for a specific job with AI scoring, ranking, filters, and detailed match analysis.
 
-import React, { useEffect, useState } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { useParams, useNavigate, Link } from 'react-router-dom'
 import {
   getJobDetail,
   getJobApplicants,
@@ -58,21 +58,13 @@ export default function RecruiterApplicantsPage() {
   const [analysisData, setAnalysisData] = useState(null)
   const [analysisError, setAnalysisError] = useState('')
 
-  useEffect(() => {
-    fetchJobDetail()
-  }, [jobId])
-
-  useEffect(() => {
-    fetchApplicants()
-  }, [page, branch, minCgpa, maxBacklogs, batch, status, minAiScore, sortBy])
-
   const fetchJobDetail = async () => {
     try {
       const res = await getJobDetail(parseInt(jobId))
       if (res.success && res.data) {
         setJob(res.data)
       }
-    } catch (err) {
+    } catch {
       setErrorMessage('Failed to load job details.')
     }
   }
@@ -104,6 +96,14 @@ export default function RecruiterApplicantsPage() {
       setLoading(false)
     }
   }
+
+  useEffect(() => {
+    fetchJobDetail()
+  }, [jobId])
+
+  useEffect(() => {
+    fetchApplicants()
+  }, [page, branch, minCgpa, maxBacklogs, batch, status, minAiScore, sortBy])
 
   const handleRecalculateScores = async () => {
     setRecalculating(true)
@@ -276,21 +276,42 @@ export default function RecruiterApplicantsPage() {
 
   if (!job && !loading) {
     return (
-      <div className="text-center py-16">
+      <div className="text-center py-16 space-y-4">
         <p className="text-gray-500">Job not found.</p>
+        <div>
+          <Link
+            to="/recruiter/jobs"
+            className="inline-flex items-center gap-1.5 px-4 py-2 bg-indigo-600 text-white text-xs font-semibold rounded-lg hover:bg-indigo-700 transition focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          >
+            ← Back to Jobs
+          </Link>
+        </div>
       </div>
     )
   }
 
   return (
     <div className="space-y-6">
+      {/* Top Navigation Back to Jobs */}
+      <div>
+        <Link
+          to="/recruiter/jobs"
+          className="inline-flex items-center gap-1.5 text-xs font-semibold text-gray-500 hover:text-indigo-600 dark:text-gray-400 dark:hover:text-indigo-400 transition focus:outline-none focus:ring-2 focus:ring-indigo-500 rounded"
+        >
+          ← Back to Jobs
+        </Link>
+      </div>
+
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-gray-200 dark:border-gray-800 pb-5">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
-            Applicants for {job?.title || 'Job'}
+            Applicants for {job?.title || (loading ? 'Job...' : `Job #${jobId}`)}
           </h1>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
+            {job?.title ? (
+              <span className="font-semibold text-gray-700 dark:text-gray-300">{job.title} • </span>
+            ) : null}
             {totalCount} total applicant{totalCount !== 1 ? 's' : ''} • AI candidate ranking active
           </p>
         </div>

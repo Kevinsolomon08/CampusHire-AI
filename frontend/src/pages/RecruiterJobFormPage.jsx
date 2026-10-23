@@ -1,7 +1,7 @@
 // src/pages/RecruiterJobFormPage.jsx
 // Comprehensive Job Creation & Editing form matching all specifications and criteria.
 
-import React, { useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { createJob, getJobDetail, updateJob, publishJob } from '../api/recruiterApi'
 
@@ -47,12 +47,6 @@ export default function RecruiterJobFormPage() {
   const [reqSkillInput, setReqSkillInput] = useState('')
   const [prefSkillInput, setPrefSkillInput] = useState('')
 
-  useEffect(() => {
-    if (isEditing) {
-      fetchJobDetails()
-    }
-  }, [id])
-
   const fetchJobDetails = async () => {
     setLoading(true)
     setErrorMessage('')
@@ -90,6 +84,12 @@ export default function RecruiterJobFormPage() {
       setLoading(false)
     }
   }
+
+  useEffect(() => {
+    if (isEditing) {
+      fetchJobDetails()
+    }
+  }, [id])
 
   const handleChange = (e) => {
     const { name, value } = e.target
@@ -263,11 +263,11 @@ export default function RecruiterJobFormPage() {
   return (
     <div className="space-y-6 max-w-4xl">
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-800 pb-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-gray-200 dark:border-gray-800 pb-4">
         <div>
           <Link
             to="/recruiter/jobs"
-            className="text-xs font-semibold text-gray-400 hover:text-indigo-600 transition"
+            className="inline-flex items-center gap-1 text-xs font-semibold text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition"
           >
             ← Back to Job Postings
           </Link>
@@ -275,6 +275,31 @@ export default function RecruiterJobFormPage() {
             {isEditing ? 'Edit Job Posting' : 'Create Campus Hiring Drive'}
           </h1>
         </div>
+
+        {isEditing && (
+          <div className="flex items-center gap-2 self-start sm:self-auto">
+            {formData.status === 'DRAFT' ? (
+              <button
+                type="button"
+                disabled
+                title="Publish this job to start receiving applicants"
+                aria-label={`View applicants for ${formData.title || 'this job'} (disabled - publish this job to start receiving applicants)`}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500 border border-gray-200 dark:border-gray-700 cursor-not-allowed opacity-60"
+              >
+                <span>👥</span> View Applicants
+              </button>
+            ) : (
+              <Link
+                to={`/recruiter/jobs/${id}/applicants`}
+                title={`View applicants for ${formData.title || 'this job'}`}
+                aria-label={`View applicants for ${formData.title || 'this job'}`}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:hover:bg-indigo-900/80 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 transition shadow-2xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              >
+                <span>👥</span> View Applicants
+              </Link>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Notifications */}
