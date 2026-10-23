@@ -46,7 +46,9 @@ def check_eligibility(student: Any, job: Any) -> Dict[str, Union[bool, List[str]
     minimum_cgpa = _get_val(job, "minimum_cgpa", "min_cgpa")
     student_cgpa = _get_val(student, "cgpa", "student_cgpa")
     if minimum_cgpa is not None:
-        if student_cgpa is None or student_cgpa < minimum_cgpa:
+        if student_cgpa is None:
+            reasons.append("Your CGPA hasn't been verified yet. Please upload your marksheet in your profile.")
+        elif student_cgpa < minimum_cgpa:
             reasons.append(
                 f"Minimum CGPA requirement is {minimum_cgpa}. Your CGPA is {student_cgpa}."
             )

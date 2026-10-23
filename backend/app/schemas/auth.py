@@ -15,6 +15,7 @@ class RegisterRequest(BaseModel):
     email: EmailStr = Field(..., description="Unique email address")
     password: str = Field(..., min_length=6, max_length=128, description="Plain text password")
     role: UserRole = Field(..., description="User role: STUDENT, RECRUITER, or PLACEMENT_OFFICER")
+    cgpa: Optional[float] = Field(None, description="Not allowed; CGPA must come from a marksheet upload")
 
     # Optional fields for STUDENT role
     roll_number: Optional[str] = Field(None, max_length=50)

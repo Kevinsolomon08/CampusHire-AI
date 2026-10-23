@@ -86,6 +86,11 @@ class InterviewResult(str, enum.Enum):
     NO_SHOW = "NO_SHOW"
 
 
+class StudentCgpaSource(str, enum.Enum):
+    MARKSHEET = "MARKSHEET"
+    LEGACY = "LEGACY"
+
+
 # ---------------------------------------------------------------------------
 # 1. User
 # ---------------------------------------------------------------------------
@@ -145,6 +150,13 @@ class Student(Base):
     branch: Mapped[str] = mapped_column(String(100), nullable=False)
     year: Mapped[int] = mapped_column(Integer, nullable=False)
     cgpa: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    cgpa_source: Mapped[Optional[StudentCgpaSource]] = mapped_column(
+        SAEnum(StudentCgpaSource, name="studentcgpasource"), nullable=True
+    )
+    cgpa_verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    current_marksheet_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("marksheets.id", ondelete="SET NULL"), nullable=True
+    )
     backlog_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     # Stored as a JSON array of skill strings, e.g. ["Python", "SQL"]
     skills: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
@@ -162,6 +174,22 @@ class Student(Base):
     # Relationships
     user: Mapped["User"] = relationship("User", back_populates="student")
     resumes: Mapped[List["Resume"]] = relationship("Resume", back_populates="student")
+    marksheets: Mapped[List["Marksheet"]] = relationship(
+        "Marksheet",
+        back_populates="student",
+        foreign_keys="Marksheet.student_id",
+    )
+    current_marksheet: Mapped[Optional["Marksheet"]] = relationship(
+        "Marksheet",
+        back_populates="current_student",
+        foreign_keys="[Student.current_marksheet_id]",
+        post_update=True,
+    )
+    cgpa_history: Mapped[List["StudentCgpaHistory"]] = relationship(
+        "StudentCgpaHistory",
+        back_populates="student",
+        foreign_keys="StudentCgpaHistory.student_id",
+    )
     applications: Mapped[List["Application"]] = relationship(
         "Application", back_populates="student"
     )
@@ -185,6 +213,77 @@ class Student(Base):
     __table_args__ = (
         Index("ix_students_student_id", "id"),
         Index("ix_students_user_id", "user_id"),
+    )
+
+
+class Marksheet(Base):
+    __tablename__ = "marksheets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    student_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("students.id", ondelete="CASCADE"), nullable=False
+    )
+    original_filename: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    stored_filename: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    file_path: Mapped[str] = mapped_column(String(500), nullable=False)
+    extracted_cgpa: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    matched_label: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    validation_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    uploaded_at: Mapped[datetime] = mapped_column(
+        DateTime, default=func.now(), nullable=False
+    )
+
+    student: Mapped["Student"] = relationship(
+        "Student",
+        back_populates="marksheets",
+        foreign_keys="[Marksheet.student_id]",
+    )
+    current_student: Mapped[Optional["Student"]] = relationship(
+        "Student",
+        back_populates="current_marksheet",
+        foreign_keys="[Student.current_marksheet_id]",
+    )
+    history_rows: Mapped[List["StudentCgpaHistory"]] = relationship(
+        "StudentCgpaHistory",
+        back_populates="marksheet",
+        foreign_keys="StudentCgpaHistory.marksheet_id",
+    )
+
+    __table_args__ = (
+        Index("ix_marksheets_student_id", "student_id"),
+    )
+
+
+class StudentCgpaHistory(Base):
+    __tablename__ = "student_cgpa_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    student_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("students.id", ondelete="CASCADE"), nullable=False
+    )
+    old_cgpa: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    new_cgpa: Mapped[float] = mapped_column(Float, nullable=False)
+    marksheet_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("marksheets.id", ondelete="CASCADE"), nullable=False
+    )
+    source: Mapped[str] = mapped_column(String(20), default="MARKSHEET", nullable=False)
+    changed_at: Mapped[datetime] = mapped_column(
+        DateTime, default=func.now(), nullable=False
+    )
+
+    student: Mapped["Student"] = relationship(
+        "Student",
+        back_populates="cgpa_history",
+        foreign_keys="[StudentCgpaHistory.student_id]",
+    )
+    marksheet: Mapped["Marksheet"] = relationship(
+        "Marksheet",
+        back_populates="history_rows",
+        foreign_keys="[StudentCgpaHistory.marksheet_id]",
+    )
+
+    __table_args__ = (
+        Index("ix_student_cgpa_history_student_id", "student_id"),
     )
 
 

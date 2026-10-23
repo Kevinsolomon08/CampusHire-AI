@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field, field_validator
 class StudentProfileUpdate(BaseModel):
     department: Optional[str] = Field(None, max_length=100)
     batch: Optional[int] = None
-    cgpa: Optional[float] = None
+    cgpa: Optional[float] = Field(None, exclude=True)
     backlog_count: Optional[int] = None
     phone: Optional[str] = Field(None, max_length=20)
     linkedin_url: Optional[str] = Field(None, max_length=500)

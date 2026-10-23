@@ -32,6 +32,9 @@ class Settings(BaseSettings):
 
     # File uploads
     UPLOAD_DIRECTORY: str = "uploads"
+    MARKSHEET_UPLOAD_DIRECTORY: str = "uploads/marksheets"
+    MARKSHEET_MAX_SIZE_MB: int = 5
+    MARKSHEET_VALIDATION_MIN_SCORE: float = 5.0
 
     # AI — Embeddings
     # SentenceTransformer model to use for semantic embeddings.

@@ -21,10 +21,17 @@ security_scheme = HTTPBearer(auto_error=False)
 class AppError(HTTPException):
     """Custom HTTPException carrying an error_code for envelope responses."""
 
-    def __init__(self, status_code: int, message: str, error_code: str = "ERROR"):
+    def __init__(
+        self,
+        status_code: int,
+        message: str,
+        error_code: str = "ERROR",
+        details: object | None = None,
+    ):
         super().__init__(status_code=status_code, detail=message)
         self.message = message
         self.error_code = error_code
+        self.details = details
 
 
 def get_current_user(

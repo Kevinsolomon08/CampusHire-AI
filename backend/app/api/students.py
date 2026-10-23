@@ -7,6 +7,7 @@ import logging
 import math
 import os
 import re
+import shutil
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -22,6 +23,7 @@ from app.ai.embedding_service import (
     get_or_generate_embedding,
     text_hash,
 )
+from app.ai.marksheet_parser import extract_cgpa, validate_marksheet_text
 from app.ai.resume_parser import (
     ResumeExtractionError,
     extract_text_from_pdf,
@@ -31,7 +33,17 @@ from app.api.deps import AppError, get_current_user, require_role
 from app.api.resumes import _run_resume_parse
 from app.core.config import settings
 from app.database.connection import get_db
-from app.models.models import Company, Job, JobStatus, Resume, Student, User, UserRole
+from app.models.models import (
+    Company,
+    Job,
+    JobStatus,
+    Marksheet,
+    Resume,
+    Student,
+    StudentCgpaHistory,
+    User,
+    UserRole,
+)
 from app.schemas.response import APIResponse
 from app.schemas.student import (
     CompanyBrief,
@@ -173,13 +185,18 @@ def update_student_profile(
 ):
     student = _get_or_create_student(current_user, db)
 
+    if payload.cgpa is not None:
+        raise AppError(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            message="CGPA can only be updated by uploading your marksheet.",
+            error_code="CGPA_UPDATE_NOT_ALLOWED",
+        )
+
     # Update Student specific fields
     if payload.department is not None:
         student.branch = payload.department
     if payload.batch is not None:
         student.year = payload.batch
-    if payload.cgpa is not None:
-        student.cgpa = payload.cgpa
     if payload.backlog_count is not None:
         student.backlog_count = payload.backlog_count
     if payload.phone is not None:
@@ -421,6 +438,195 @@ async def upload_resume(
         data=resume_data,
         message=upload_msg,
     )
+
+
+@router.post(
+    "/marksheet",
+    response_model=APIResponse[dict],
+    status_code=status.HTTP_201_CREATED,
+    summary="Upload and verify a CGPA marksheet PDF",
+)
+async def upload_marksheet(
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_role(UserRole.STUDENT)),
+    db: Session = Depends(get_db),
+):
+    student = _get_or_create_student(current_user, db)
+    filename = file.filename or "marksheet.pdf"
+
+    if not filename.lower().endswith(".pdf"):
+        raise AppError(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            message="Only PDF marksheet files are allowed.",
+            error_code="NOT_A_MARKSHEET",
+        )
+
+    content = await file.read()
+    if not content:
+        raise AppError(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            message="Uploaded file is empty.",
+            error_code="EMPTY_MARKSHEET",
+        )
+
+    max_size_bytes = settings.MARKSHEET_MAX_SIZE_MB * 1024 * 1024
+    if len(content) > max_size_bytes:
+        raise AppError(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            message=f"Marksheet exceeds the {settings.MARKSHEET_MAX_SIZE_MB}MB limit.",
+            error_code="FILE_TOO_LARGE",
+        )
+
+    if not content.startswith(b"%PDF-"):
+        raise AppError(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            message="Invalid or corrupted PDF file.",
+            error_code="INVALID_PDF",
+        )
+
+    upload_dir = settings.MARKSHEET_UPLOAD_DIRECTORY
+    os.makedirs(upload_dir, exist_ok=True)
+    temp_path = os.path.join(upload_dir, f"tmp_{uuid.uuid4().hex}.pdf")
+    final_path = os.path.join(upload_dir, f"marksheet_{student.id}_{uuid.uuid4().hex}.pdf")
+
+    try:
+        with open(temp_path, "wb") as tmp_file:
+            tmp_file.write(content)
+
+        with pdfplumber.open(temp_path) as pdf:
+            page_count = len(pdf.pages)
+
+        text = extract_text_from_pdf(temp_path)
+        if len(re.sub(r"\s+", "", text)) < 50:
+            raise AppError(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                message="We couldn't read text from this PDF. Please upload the digital (text-based) marksheet PDF from your university portal.",
+                error_code="SCANNED_MARKSHEET",
+            )
+
+        validation = validate_marksheet_text(text, page_count=page_count)
+        if not validation.get("is_valid"):
+            raise AppError(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                message="A valid academic marksheet PDF is required.",
+                error_code="NOT_A_MARKSHEET",
+                details=validation.get("reasons", []),
+            )
+
+        extraction = extract_cgpa(text)
+        if extraction.get("error_code"):
+            raise AppError(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                message=extraction.get("message", "Unable to extract the cumulative CGPA."),
+                error_code=extraction["error_code"],
+            )
+
+        if extraction["cgpa"] is None:
+            raise AppError(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                message="Unable to extract the cumulative CGPA.",
+                error_code="CGPA_NOT_FOUND",
+            )
+
+        shutil.move(temp_path, final_path)
+        temp_path = None
+
+        previous_cgpa = student.cgpa
+        verified_at = datetime.utcnow()
+
+        try:
+            marksheet = Marksheet(
+                student_id=student.id,
+                original_filename=filename,
+                stored_filename=os.path.basename(final_path),
+                file_path=final_path,
+                extracted_cgpa=float(extraction["cgpa"]),
+                matched_label=extraction.get("label"),
+                validation_score=validation.get("score"),
+                uploaded_at=verified_at,
+            )
+            db.add(marksheet)
+            db.flush()
+
+            student.cgpa = float(extraction["cgpa"])
+            student.cgpa_source = "MARKSHEET"
+            student.cgpa_verified_at = verified_at
+            student.current_marksheet_id = marksheet.id
+
+            history_row = StudentCgpaHistory(
+                student_id=student.id,
+                old_cgpa=previous_cgpa,
+                new_cgpa=float(extraction["cgpa"]),
+                marksheet_id=marksheet.id,
+                source="MARKSHEET",
+                changed_at=verified_at,
+            )
+            db.add(history_row)
+
+            from app.services.notification_service import create_notification
+
+            create_notification(
+                db,
+                current_user.id,
+                "CGPA Verified",
+                f"Your CGPA was updated to {float(extraction['cgpa']):.2f} from your marksheet",
+            )
+
+            db.commit()
+            db.refresh(student)
+            db.refresh(marksheet)
+        except Exception:
+            db.rollback()
+            if os.path.exists(final_path):
+                try:
+                    os.remove(final_path)
+                except OSError:
+                    pass
+            raise
+
+        logger.info(
+            "Marksheet validation succeeded: student_id=%s, result=%s, validation_score=%s",
+            student.id,
+            extraction.get("error_code"),
+            validation.get("score"),
+        )
+
+        return APIResponse(
+            success=True,
+            data={
+                "cgpa": float(extraction["cgpa"]),
+                "previous_cgpa": previous_cgpa,
+                "source": "MARKSHEET",
+                "verified_at": verified_at,
+                "filename": filename,
+            },
+            message=f"Your CGPA was updated to {float(extraction['cgpa']):.2f} from your marksheet",
+        )
+    except AppError:
+        raise
+    except Exception as exc:
+        logger.exception("Marksheet upload failed for student_id=%s: %s", student.id, exc)
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+        if os.path.exists(final_path):
+            try:
+                os.remove(final_path)
+            except OSError:
+                pass
+        raise AppError(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            message="Unable to process the marksheet upload. Please try again later.",
+            error_code="MARKSHEET_UPLOAD_FAILED",
+        )
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
 
 
 @router.get(

@@ -59,13 +59,16 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 @app.exception_handler(AppError)
 async def app_error_handler(request: Request, exc: AppError):
+    content = {
+        "success": False,
+        "message": exc.message,
+        "error_code": exc.error_code,
+    }
+    if exc.details is not None:
+        content["details"] = exc.details
     return JSONResponse(
         status_code=exc.status_code,
-        content={
-            "success": False,
-            "message": exc.message,
-            "error_code": exc.error_code,
-        },
+        content=content,
     )
 
 

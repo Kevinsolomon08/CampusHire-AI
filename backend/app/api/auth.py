@@ -105,6 +105,12 @@ def register(
 
     # Create linked profile records based on role
     if req.role == UserRole.STUDENT:
+        if req.cgpa is not None:
+            raise AppError(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                message="CGPA can only be updated by uploading your marksheet.",
+                error_code="CGPA_UPDATE_NOT_ALLOWED",
+            )
         # Determine unique roll number
         roll_num = req.roll_number.strip() if req.roll_number else f"STU-{new_user.id:04d}"
         branch_name = req.branch.strip() if req.branch else "Computer Science"
