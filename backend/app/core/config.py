@@ -44,6 +44,16 @@ class Settings(BaseSettings):
     # Override in .env: RECOMMENDATION_TOP_N=5
     RECOMMENDATION_TOP_N: int = 5
 
+    # AI — Resume Content Validation
+    # Set to False to skip the resume content check (useful during testing).
+    # Override in .env: RESUME_VALIDATION_ENABLED=false
+    RESUME_VALIDATION_ENABLED: bool = True
+
+    # Minimum heuristic score (0-10) for a document to be accepted as a resume.
+    # Raise this to make the gate stricter; lower it to be more permissive.
+    # Override in .env: RESUME_VALIDATION_MIN_SCORE=6
+    RESUME_VALIDATION_MIN_SCORE: float = 6.0
+
     @property
     def cors_origins_list(self) -> List[str]:
         """Return CORS_ORIGINS as a list, splitting on commas."""

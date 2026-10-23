@@ -23,6 +23,7 @@ export default function StudentResumePage() {
   const [errorMessage, setErrorMessage] = useState('')
   const [successMessage, setSuccessMessage] = useState('')
   const [profileSavedMessage, setProfileSavedMessage] = useState('')
+  const [notAResumeError, setNotAResumeError] = useState(null)
 
   // Parsed Resume Review State
   const [parsedDataAvailable, setParsedDataAvailable] = useState(false)
@@ -178,6 +179,7 @@ export default function StudentResumePage() {
     setErrorMessage('')
     setSuccessMessage('')
     setProfileSavedMessage('')
+    setNotAResumeError(null)
     if (validateFile(file)) {
       setSelectedFile(file)
     } else {
@@ -210,6 +212,7 @@ export default function StudentResumePage() {
     setErrorMessage('')
     setSuccessMessage('')
     setProfileSavedMessage('')
+    setNotAResumeError(null)
 
     try {
       const res = await uploadResume(selectedFile)
@@ -235,7 +238,18 @@ export default function StudentResumePage() {
         }
       }
     } catch (err) {
-      setErrorMessage(err.response?.data?.message || 'Failed to upload resume.')
+      const errCode = err.response?.data?.error_code
+      if (errCode === 'NOT_A_RESUME') {
+        // Reset file input so the student can choose a different file
+        setSelectedFile(null)
+        if (fileInputRef.current) fileInputRef.current.value = ''
+        setNotAResumeError(
+          err.response?.data?.message ||
+            'The uploaded PDF does not appear to be a resume. Please upload your actual resume document.'
+        )
+      } else {
+        setErrorMessage(err.response?.data?.message || 'Failed to upload resume.')
+      }
     } finally {
       setUploading(false)
     }
@@ -454,6 +468,40 @@ export default function StudentResumePage() {
           </Link>
         </div>
       )}
+
+      {/* NOT_A_RESUME prominent alert banner */}
+      {notAResumeError && (
+        <div
+          role="alert"
+          className="rounded-xl border-2 border-rose-400 bg-rose-50 dark:bg-rose-950/40 dark:border-rose-700 p-5 shadow-md"
+        >
+          <div className="flex items-start gap-3">
+            <span className="text-2xl shrink-0" aria-hidden="true">🚫</span>
+            <div className="flex-1">
+              <p className="text-sm font-bold text-rose-900 dark:text-rose-200 mb-1">
+                This PDF doesn’t look like a resume
+              </p>
+              <p className="text-xs text-rose-800 dark:text-rose-300 leading-relaxed">
+                {notAResumeError}
+              </p>
+              <p className="text-xs text-rose-700 dark:text-rose-400 mt-2">
+                ℹ️ Accepted documents are resumes or CVs containing your skills, education,
+                and experience. Invoices, research papers, legal documents, and articles
+                are not accepted.
+              </p>
+            </div>
+            <button
+              type="button"
+              aria-label="Dismiss"
+              onClick={() => setNotAResumeError(null)}
+              className="shrink-0 text-rose-400 hover:text-rose-700 dark:hover:text-rose-200 transition text-lg leading-none"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      )}
+
       {errorMessage && (
         <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm font-medium text-rose-800 dark:border-rose-900/50 dark:bg-rose-950/40 dark:text-rose-300">
           ⚠️ {errorMessage}
@@ -619,6 +667,9 @@ export default function StudentResumePage() {
           <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
             Standard PDF documents only. Maximum file size: 5MB.
           </p>
+          <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
+            Only resume / CV documents are accepted. Invoices, research papers, and other non-resume PDFs will be rejected.
+          </p>
 
           {selectedFile && (
             <div className="mt-3 inline-block text-xs font-semibold px-2.5 py-1 bg-indigo-100 text-indigo-800 dark:bg-indigo-950/80 dark:text-indigo-300 rounded-md">
@@ -660,7 +711,7 @@ export default function StudentResumePage() {
       </div>
 
       {/* Review Extracted Information Section */}
-      {parsedDataAvailable && (
+      {parsedDataAvailable && !notAResumeError && (
         <div className="rounded-2xl border border-indigo-200 dark:border-indigo-900/60 p-6 bg-white dark:bg-gray-900 shadow-md space-y-6">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-gray-100 dark:border-gray-800 gap-4">
             <div>

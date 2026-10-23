@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File, Query, UploadFile, status
+import pdfplumber
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 
@@ -21,6 +22,11 @@ from app.ai.embedding_service import (
     get_or_generate_embedding,
     text_hash,
 )
+from app.ai.resume_parser import (
+    ResumeExtractionError,
+    extract_text_from_pdf,
+)
+from app.ai.resume_validator import validate_resume_text
 from app.api.deps import AppError, get_current_user, require_role
 from app.api.resumes import _run_resume_parse
 from app.core.config import settings
@@ -329,6 +335,44 @@ async def upload_resume(
             message="Failed to save resume file. Please try again later.",
             error_code="STORAGE_ERROR",
         )
+
+    # 8. Resume-content validation (rule-based heuristic, runs before DB write)
+    if settings.RESUME_VALIDATION_ENABLED:
+        try:
+            with pdfplumber.open(file_path) as pdf:
+                _page_count = len(pdf.pages)
+            raw_text = extract_text_from_pdf(file_path)
+            validation = validate_resume_text(raw_text, page_count=_page_count)
+        except ResumeExtractionError:
+            # PDF has no extractable text — treat as inconclusive, let parsing
+            # handle the failure gracefully; do NOT block the upload.
+            validation = {"is_resume": True, "score": 0.0, "reasons": []}
+        except Exception as exc:
+            # Unexpected error in validator — log and allow the upload to proceed
+            logger.warning(
+                "Resume validator raised an unexpected error for student_id=%s: %s",
+                student.id, exc,
+            )
+            validation = {"is_resume": True, "score": 0.0, "reasons": []}
+
+        if not validation["is_resume"]:
+            # Remove the temp file so we do not leave orphaned uploads on disk
+            try:
+                os.remove(file_path)
+            except OSError:
+                pass
+            logger.warning(
+                "Resume content rejected for student_id=%s: score=%.2f",
+                student.id, validation["score"],
+            )
+            raise AppError(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                message=(
+                    "The uploaded PDF does not appear to be a resume. "
+                    "Please upload your actual resume document."
+                ),
+                error_code="NOT_A_RESUME",
+            )
 
     # Set any existing resumes for this student to non-primary
     db.query(Resume).filter(Resume.student_id == student.id).update({"is_primary": False})
