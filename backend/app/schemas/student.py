@@ -71,6 +71,8 @@ class StudentProfileResponse(BaseModel):
     department: str
     batch: int
     cgpa: Optional[float] = None
+    cgpa_source: Optional[str] = None
+    cgpa_verified_at: Optional[datetime] = None
     backlog_count: int = 0
     phone: Optional[str] = None
     linkedin_url: Optional[str] = None

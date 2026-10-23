@@ -1,14 +1,18 @@
 // src/pages/StudentProfilePage.jsx
 // Comprehensive Student Profile management page with completion tracking and validation.
 
-import React, { useEffect, useState } from 'react'
-import { getStudentProfile, updateStudentProfile } from '../api/studentApi'
+import { useEffect, useState, useCallback } from 'react'
+import { getStudentProfile, updateStudentProfile, uploadMarksheet } from '../api/studentApi'
 
 export default function StudentProfilePage() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [errorMessage, setErrorMessage] = useState('')
   const [successMessage, setSuccessMessage] = useState('')
+  const [cgpaInfo, setCgpaInfo] = useState({ cgpa: null, source: null, verifiedAt: null })
+  const [uploadingMarksheet, setUploadingMarksheet] = useState(false)
+  const [marksheetError, setMarksheetError] = useState('')
+  const [marksheetSuccess, setMarksheetSuccess] = useState('')
 
   // Form State
   const [formData, setFormData] = useState({
@@ -31,18 +35,18 @@ export default function StudentProfilePage() {
   const [skillInput, setSkillInput] = useState('')
   const [completionPct, setCompletionPct] = useState(0)
 
-  // Fetch initial profile
-  useEffect(() => {
-    fetchProfile()
-  }, [])
-
-  const fetchProfile = async () => {
+  const fetchProfile = useCallback(async () => {
     setLoading(true)
     setErrorMessage('')
     try {
       const res = await getStudentProfile()
       if (res.success && res.data) {
         const d = res.data
+        setCgpaInfo({
+          cgpa: d.cgpa !== null && d.cgpa !== undefined ? d.cgpa : null,
+          source: d.cgpa_source || (d.cgpa !== null && d.cgpa !== undefined ? 'LEGACY' : null),
+          verifiedAt: d.cgpa_verified_at || null,
+        })
         setFormData({
           name: d.name || '',
           email: d.email || '',
@@ -66,7 +70,12 @@ export default function StudentProfilePage() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
+
+  // Fetch initial profile
+  useEffect(() => {
+    fetchProfile()
+  }, [fetchProfile])
 
   const handleChange = (e) => {
     const { name, value } = e.target
@@ -92,29 +101,6 @@ export default function StudentProfilePage() {
     }))
   }
 
-  // Array handlers (Education, Experience, Projects)
-  const addEducation = () => {
-    setFormData((prev) => ({
-      ...prev,
-      education: [...prev.education, { degree: '', institution: '', year: 2025, score: '' }],
-    }))
-  }
-
-  const updateEducation = (index, field, value) => {
-    setFormData((prev) => {
-      const updated = [...prev.education]
-      updated[index] = { ...updated[index], [field]: value }
-      return { ...prev, education: updated }
-    })
-  }
-
-  const removeEducation = (index) => {
-    setFormData((prev) => ({
-      ...prev,
-      education: prev.education.filter((_, i) => i !== index),
-    }))
-  }
-
   const addProject = () => {
     setFormData((prev) => ({
       ...prev,
@@ -137,18 +123,11 @@ export default function StudentProfilePage() {
     }))
   }
 
-  // Submit Handler
+  // Submit Handler - Note: CGPA is intentionally omitted; CGPA can only be updated via marksheet upload
   const handleSubmit = async (e) => {
     e.preventDefault()
     setErrorMessage('')
     setSuccessMessage('')
-
-    // Client-side validations
-    const parsedCgpa = formData.cgpa === '' ? null : parseFloat(formData.cgpa)
-    if (parsedCgpa !== null && (isNaN(parsedCgpa) || parsedCgpa < 0 || parsedCgpa > 10)) {
-      setErrorMessage('CGPA must be a valid number between 0.0 and 10.0.')
-      return
-    }
 
     const parsedBacklogs = parseInt(formData.backlog_count, 10)
     if (isNaN(parsedBacklogs) || parsedBacklogs < 0) {
@@ -161,7 +140,6 @@ export default function StudentProfilePage() {
       roll_number: formData.roll_number,
       department: formData.department,
       batch: parseInt(formData.batch, 10),
-      cgpa: parsedCgpa,
       backlog_count: parsedBacklogs,
       phone: formData.phone,
       linkedin_url: formData.linkedin_url,
@@ -186,6 +164,63 @@ export default function StudentProfilePage() {
       setErrorMessage(err.response?.data?.message || 'Failed to update profile.')
     } finally {
       setSaving(false)
+    }
+  }
+
+  // Marksheet Upload Handler
+  const handleMarksheetUpload = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    setMarksheetError('')
+    setMarksheetSuccess('')
+
+    if (!file.name.toLowerCase().endsWith('.pdf')) {
+      setMarksheetError('Only PDF marksheet files are allowed. (NOT_A_MARKSHEET)')
+      e.target.value = ''
+      return
+    }
+
+    setUploadingMarksheet(true)
+    try {
+      const res = await uploadMarksheet(file)
+      if (res.success && res.data) {
+        setCgpaInfo({
+          cgpa: res.data.cgpa,
+          source: res.data.source || 'MARKSHEET',
+          verifiedAt: res.data.verified_at,
+        })
+        setMarksheetSuccess(
+          res.message || `Your CGPA was updated to ${Number(res.data.cgpa).toFixed(2)} from your marksheet.`
+        )
+        // Refresh full profile in background to update completion percentage
+        fetchProfile()
+      }
+    } catch (err) {
+      const errData = err.response?.data
+      const errCode = errData?.error_code
+      let msg = errData?.message || 'Failed to upload and verify marksheet.'
+
+      const codeMap = {
+        NOT_A_MARKSHEET: 'The uploaded file does not look like an academic marksheet.',
+        SCANNED_MARKSHEET: "We couldn't read text from this PDF. Please upload the digital (text-based) marksheet PDF from your university portal.",
+        SGPA_ONLY: 'The marksheet only shows semester SGPA. Please upload a cumulative marksheet with your overall CGPA.',
+        CGPA_NOT_FOUND: 'No cumulative CGPA label and score could be found. Please ensure your cumulative CGPA is clearly displayed.',
+        UNSUPPORTED_SCALE: 'This marksheet uses an unsupported scale. Please upload a marksheet with a standard 10-point scale.',
+        CGPA_OUT_OF_RANGE: 'The extracted CGPA is outside the allowed 0.00 - 10.00 range.',
+        CGPA_AMBIGUOUS: 'Multiple conflicting CGPA candidates were found without a clear final value.',
+        CGPA_UPDATE_NOT_ALLOWED: 'Manual CGPA update is not allowed. Only marksheet uploads can set your CGPA.',
+      }
+
+      if (errCode && codeMap[errCode]) {
+        msg = `${codeMap[errCode]} [${errCode}]`
+      } else if (errCode) {
+        msg = `${msg} [${errCode}]`
+      }
+      setMarksheetError(msg)
+    } finally {
+      setUploadingMarksheet(false)
+      e.target.value = ''
     }
   }
 
@@ -373,22 +408,6 @@ export default function StudentProfilePage() {
             </div>
             <div>
               <label className="block text-xs font-semibold uppercase text-gray-600 dark:text-gray-300 mb-1">
-                CGPA (0.00 - 10.00)
-              </label>
-              <input
-                type="number"
-                name="cgpa"
-                step="0.01"
-                min="0"
-                max="10"
-                value={formData.cgpa}
-                onChange={handleChange}
-                placeholder="e.g. 8.75"
-                className="w-full px-3.5 py-2.5 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-indigo-500"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold uppercase text-gray-600 dark:text-gray-300 mb-1">
                 Active Backlogs Count
               </label>
               <input
@@ -400,6 +419,113 @@ export default function StudentProfilePage() {
                 className="w-full px-3.5 py-2.5 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-indigo-500"
               />
             </div>
+          </div>
+
+          {/* Read-Only CGPA Card with Marksheet Upload */}
+          <div className="mt-4 p-5 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/70 dark:bg-gray-800/60 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-bold uppercase tracking-wider text-gray-700 dark:text-gray-200">
+                    Cumulative CGPA
+                  </span>
+                  {cgpaInfo.cgpa !== null && cgpaInfo.source === 'MARKSHEET' && (
+                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800 dark:bg-emerald-900/60 dark:text-emerald-300">
+                      ✓ Verified Marksheet
+                    </span>
+                  )}
+                  {cgpaInfo.cgpa !== null && cgpaInfo.source === 'LEGACY' && (
+                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-800 dark:bg-amber-900/60 dark:text-amber-300">
+                      ⚠️ Legacy Value
+                    </span>
+                  )}
+                  {(cgpaInfo.cgpa === null || cgpaInfo.cgpa === undefined) && (
+                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-rose-100 text-rose-800 dark:bg-rose-900/60 dark:text-rose-300">
+                      ✕ Unverified
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                  {cgpaInfo.cgpa !== null && cgpaInfo.source === 'MARKSHEET' && cgpaInfo.verifiedAt
+                    ? `Officially extracted from verified marksheet on ${new Date(cgpaInfo.verifiedAt).toLocaleDateString()}.`
+                    : cgpaInfo.cgpa !== null && cgpaInfo.source === 'LEGACY'
+                    ? 'Legacy profile score. Upload your university marksheet to officially verify your CGPA.'
+                    : "Your CGPA hasn't been verified yet. Upload your digital marksheet to become eligible for campus jobs."}
+                </p>
+              </div>
+
+              <div className="flex items-center gap-4">
+                <div className="text-right">
+                  <span className="text-3xl font-extrabold text-indigo-600 dark:text-indigo-400">
+                    {cgpaInfo.cgpa !== null && cgpaInfo.cgpa !== undefined
+                      ? Number(cgpaInfo.cgpa).toFixed(2)
+                      : '—'}
+                  </span>
+                  <span className="text-xs font-semibold text-gray-400 dark:text-gray-500 block">
+                    / 10.00 Scale
+                  </span>
+                </div>
+
+                <div>
+                  <input
+                    type="file"
+                    id="marksheet-pdf-input"
+                    accept="application/pdf,.pdf"
+                    className="hidden"
+                    onChange={handleMarksheetUpload}
+                    disabled={uploadingMarksheet}
+                  />
+                  <label
+                    htmlFor="marksheet-pdf-input"
+                    className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-bold uppercase tracking-wider text-white shadow-sm cursor-pointer transition ${
+                      uploadingMarksheet
+                        ? 'bg-indigo-400 cursor-not-allowed'
+                        : 'bg-indigo-600 hover:bg-indigo-700 active:scale-95'
+                    }`}
+                  >
+                    {uploadingMarksheet ? (
+                      <>
+                        <svg className="animate-spin h-3.5 w-3.5 text-white" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path>
+                        </svg>
+                        <span>Verifying...</span>
+                      </>
+                    ) : (
+                      <>
+                        <span>📄</span>
+                        <span>{cgpaInfo.cgpa ? 'Update Marksheet' : 'Upload Marksheet'}</span>
+                      </>
+                    )}
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            {/* Marksheet Status Alerts */}
+            {marksheetError && (
+              <div className="p-3 rounded-lg bg-rose-50 dark:bg-rose-900/30 border border-rose-200 dark:border-rose-800 text-xs text-rose-700 dark:text-rose-300 flex items-start gap-2">
+                <span className="font-bold">⚠️</span>
+                <div className="flex-1">
+                  <p className="font-semibold">Marksheet Verification Failed</p>
+                  <p className="mt-0.5">{marksheetError}</p>
+                </div>
+              </div>
+            )}
+
+            {marksheetSuccess && (
+              <div className="p-3 rounded-lg bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-800 text-xs text-emerald-700 dark:text-emerald-300 flex items-start gap-2">
+                <span className="font-bold">✓</span>
+                <div className="flex-1">
+                  <p className="font-semibold">Marksheet Verified Successfully</p>
+                  <p className="mt-0.5">{marksheetSuccess}</p>
+                </div>
+              </div>
+            )}
+
+            <p className="text-[11px] text-gray-500 dark:text-gray-400 italic">
+              * Official university digital marksheet PDFs only. CGPA cannot be edited manually. Scanned image-only PDFs or semester SGPA sheets are rejected.
+            </p>
           </div>
         </div>
 

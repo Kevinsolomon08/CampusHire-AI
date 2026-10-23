@@ -71,7 +71,6 @@ def test_update_student_profile_valid(setup_test_data):
     update_payload = {
         "department": "Information Technology",
         "batch": 2025,
-        "cgpa": 9.1,
         "backlog_count": 0,
         "phone": "+91 9876543210",
         "skills": ["Python", "React", "Docker"],
@@ -82,21 +81,22 @@ def test_update_student_profile_valid(setup_test_data):
     assert response.status_code == 200
     data = response.json()
     assert data["success"] is True
-    assert data["data"]["cgpa"] == 9.1
+    assert data["data"]["cgpa"] == 8.5  # CGPA unchanged
     assert data["data"]["department"] == "Information Technology"
     assert data["data"]["name"] == "Alex River Updated"
     assert data["data"]["phone"] == "+91 9876543210"
     assert "React" in data["data"]["skills"]
 
 
-def test_update_student_profile_invalid_cgpa(setup_test_data):
+def test_update_student_profile_rejects_cgpa(setup_test_data):
     token = setup_test_data["token"]
-    payload = {"cgpa": 11.5}
+    payload = {"cgpa": 9.5}
     response = client.put("/students/me", json=payload, headers={"Authorization": f"Bearer {token}"})
     assert response.status_code == 422
     data = response.json()
     assert data["success"] is False
-    assert data["error_code"] == "VALIDATION_ERROR"
+    assert data["error_code"] == "CGPA_UPDATE_NOT_ALLOWED"
+    assert "CGPA can only be updated by uploading your marksheet" in data["message"]
 
 
 def test_update_student_profile_invalid_backlogs(setup_test_data):

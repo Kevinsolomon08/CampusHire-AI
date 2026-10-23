@@ -24,6 +24,17 @@ export const uploadResume = async (file) => {
   return response.data
 }
 
+export const uploadMarksheet = async (file) => {
+  const formData = new FormData()
+  formData.append('file', file)
+  const response = await client.post('/students/marksheet', formData, {
+    headers: {
+      'Content-Type': 'multipart/form-data',
+    },
+  })
+  return response.data
+}
+
 export const getStudentResume = async () => {
   const response = await client.get('/students/resume')
   return response.data

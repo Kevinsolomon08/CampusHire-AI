@@ -110,3 +110,34 @@ def test_with_partial_requirements_none():
 
     result = check_eligibility(student, job)
     assert result == {"eligible": True, "reasons": []}
+
+
+def test_unverified_cgpa_when_cutoff_required():
+    student = MockStudent(cgpa=None, department="CSE", backlog_count=0, batch=2025)
+    job = MockJob(minimum_cgpa=7.5, allowed_branches=["CSE"], maximum_backlogs=0, eligible_batch=2025)
+
+    result = check_eligibility(student, job)
+    assert result["eligible"] is False
+    assert result["reasons"] == [
+        "Your CGPA hasn't been verified yet. Please upload your marksheet in your profile."
+    ]
+
+
+def test_unverified_cgpa_when_no_cgpa_required():
+    student = MockStudent(cgpa=None, department="CSE", backlog_count=0, batch=2025)
+    job = MockJob(minimum_cgpa=None, allowed_branches=["CSE"], maximum_backlogs=0, eligible_batch=2025)
+
+    result = check_eligibility(student, job)
+    assert result["eligible"] is True
+    assert result["reasons"] == []
+
+
+def test_unverified_cgpa_with_dictionary_payload():
+    student_dict = {"cgpa": None, "department": "ECE", "backlog_count": 0, "batch": 2025}
+    job_dict = {"minimum_cgpa": 6.5, "allowed_branches": ["ECE"], "maximum_backlogs": 0, "eligible_batch": 2025}
+
+    result = check_eligibility(student_dict, job_dict)
+    assert result["eligible"] is False
+    assert result["reasons"] == [
+        "Your CGPA hasn't been verified yet. Please upload your marksheet in your profile."
+    ]
