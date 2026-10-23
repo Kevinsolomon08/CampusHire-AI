@@ -33,6 +33,17 @@ class Settings(BaseSettings):
     # File uploads
     UPLOAD_DIRECTORY: str = "uploads"
 
+    # AI — Embeddings
+    # SentenceTransformer model to use for semantic embeddings.
+    # Defaults to a small, CPU-friendly model.
+    # Override in .env: EMBEDDING_MODEL_NAME=all-MiniLM-L6-v2
+    EMBEDDING_MODEL_NAME: str = "all-MiniLM-L6-v2"
+
+    # AI — Job Recommendations
+    # Number of top jobs returned by GET /students/recommended-jobs.
+    # Override in .env: RECOMMENDATION_TOP_N=5
+    RECOMMENDATION_TOP_N: int = 5
+
     @property
     def cors_origins_list(self) -> List[str]:
         """Return CORS_ORIGINS as a list, splitting on commas."""

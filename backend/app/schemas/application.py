@@ -153,8 +153,12 @@ class ApplicantListItem(BaseModel):
     backlog_count: int
     status: str
     applied_at: datetime
-    # AI scoring placeholders
+    # AI scoring fields
     ai_score: Optional[float] = None
+    semantic_score: Optional[float] = None
+    skill_score: Optional[float] = None
+    experience_score: Optional[float] = None
+    education_score: Optional[float] = None
     rank: Optional[int] = None
 
 
@@ -165,3 +169,32 @@ class PaginatedApplicantsResponse(BaseModel):
     page: int
     page_size: int
     total_pages: int
+
+
+class ApplicationMatchAnalysisResponse(BaseModel):
+    """Full AI scoring and match breakdown for one applicant."""
+    application_id: int
+    student_id: int
+    candidate_name: str
+    candidate_email: str
+    roll_number: str
+    branch: str
+    cgpa: Optional[float] = None
+    job_id: int
+    job_title: str
+    overall_score: Optional[float] = None
+    semantic_similarity: Optional[float] = None
+    skill_match_percentage: Optional[float] = None
+    experience_relevance: Optional[float] = None
+    education_relevance: Optional[float] = None
+    matching_skills: List[str] = Field(default_factory=list)
+    missing_required_skills: List[str] = Field(default_factory=list)
+    matching_preferred_skills: List[str] = Field(default_factory=list)
+    rank: Optional[int] = None
+    eligibility: Dict[str, Any] = Field(default_factory=dict)
+    status: str
+    scoring_available: bool = True
+    disclaimer: str = (
+        "AI scores are a screening aid to help prioritize review — they don't represent a hiring decision. "
+        "Final selection is always your call."
+    )

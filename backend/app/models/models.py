@@ -292,6 +292,14 @@ class Job(Base):
         DateTime, default=func.now(), onupdate=func.now(), nullable=False
     )
 
+    # --- AI Embedding columns ---
+    # Serialised SentenceTransformer float vector for semantic job matching.
+    # NULL until first encoding attempt.
+    embedding: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    # SHA-256 hash of the text used to produce the embedding (title + description).
+    # Used to skip re-encoding when content hasn't changed.
+    embedding_hash: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     # Relationships
     company: Mapped["Company"] = relationship("Company", back_populates="jobs")
     created_by_user: Mapped[Optional["User"]] = relationship(
@@ -333,6 +341,26 @@ class Resume(Base):
     uploaded_at: Mapped[datetime] = mapped_column(
         DateTime, default=func.now(), nullable=False
     )
+
+    # --- AI Parsing columns (Phase 2) ---
+    # JSON dict produced by parse_resume(); NULL until a parse attempt succeeds.
+    parsed_data: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    # Raw cleaned text extracted from the PDF.
+    extracted_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # "pending" | "success" | "failed" | "skipped"
+    parsing_status: Mapped[Optional[str]] = mapped_column(
+        String(20), nullable=True, default="pending"
+    )
+    # Short error message when parsing_status == "failed".
+    parsing_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # --- AI Embedding columns ---
+    # Serialised SentenceTransformer float vector for semantic resume matching.
+    # NULL until first encoding attempt.
+    embedding: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    # SHA-256 hash of extracted_text at time of last encoding.
+    # Used to skip re-encoding when the resume text hasn't changed.
+    embedding_hash: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Relationships
     student: Mapped["Student"] = relationship("Student", back_populates="resumes")

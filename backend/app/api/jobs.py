@@ -5,12 +5,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import List, Optional
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session, joinedload
 
 from app.api.deps import AppError, get_current_user, require_role
 from app.database.connection import get_db
 from app.models.models import Application, Company, Job, JobStatus, Recruiter, User, UserRole
+from app.schemas.application import PaginatedApplicantsResponse
 from app.schemas.recruiter import CompanyOut, JobCreate, JobDetailResponse, JobUpdate
 from app.schemas.response import APIResponse
 
@@ -337,4 +338,83 @@ def close_job(
         success=True,
         data=_format_job_detail(job, db),
         message="Job closed successfully.",
+    )
+
+
+@router.get(
+    "/{job_id}/applications",
+    response_model=APIResponse[PaginatedApplicantsResponse],
+    summary="Get paginated applicants for a job (alias on /jobs prefix)",
+)
+def get_job_applicants_alias(
+    job_id: int,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    branch: Optional[str] = Query(None, description="Filter by branch"),
+    min_cgpa: Optional[float] = Query(None, description="Minimum CGPA"),
+    max_backlogs: Optional[int] = Query(None, description="Maximum backlogs"),
+    batch: Optional[int] = Query(None, description="Graduating batch"),
+    status: Optional[str] = Query(None, description="Filter by application status"),
+    min_ai_score: Optional[float] = Query(None, ge=0.0, le=100.0, description="Minimum AI score"),
+    sort_by: str = Query("rank", pattern="^(rank|applied_at|cgpa|name)$"),
+    current_user: User = Depends(require_role(UserRole.RECRUITER)),
+    db: Session = Depends(get_db),
+):
+    from app.api.applications import get_job_applicants
+    return get_job_applicants(
+        job_id=job_id,
+        page=page,
+        page_size=page_size,
+        branch=branch,
+        min_cgpa=min_cgpa,
+        max_backlogs=max_backlogs,
+        batch=batch,
+        status=status,
+        min_ai_score=min_ai_score,
+        sort_by=sort_by,
+        current_user=current_user,
+        db=db,
+    )
+
+
+@router.post(
+    "/{job_id}/recalculate-scores",
+    response_model=APIResponse[dict],
+    summary="Trigger recalculation of AI scores and ranking for a job (alias on /jobs prefix)",
+)
+def recalculate_job_scores_alias(
+    job_id: int,
+    current_user: User = Depends(require_role(UserRole.RECRUITER, UserRole.PLACEMENT_OFFICER)),
+    db: Session = Depends(get_db),
+):
+    from app.api.applications import recalculate_job_scores
+    return recalculate_job_scores(
+        job_id=job_id,
+        current_user=current_user,
+        db=db,
+    )
+
+
+@router.get(
+    "/{job_id}/applications/export",
+    summary="Export top-k or all eligible applicants for a job as CSV (alias on /jobs prefix)",
+)
+@router.get(
+    "/{job_id}/export",
+    summary="Export top-k or all eligible applicants for a job as CSV (short alias)",
+)
+def export_job_applicants_csv_alias(
+    job_id: int,
+    top_k: Optional[int] = Query(None, ge=1, description="Number of top candidates to export"),
+    format: str = Query("csv", pattern="^csv$", description="Export format (csv)"),
+    current_user: User = Depends(require_role(UserRole.RECRUITER, UserRole.PLACEMENT_OFFICER)),
+    db: Session = Depends(get_db),
+):
+    from app.api.applications import export_job_applicants_csv
+    return export_job_applicants_csv(
+        job_id=job_id,
+        top_k=top_k,
+        format=format,
+        current_user=current_user,
+        db=db,
     )

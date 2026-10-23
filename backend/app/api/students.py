@@ -15,7 +15,14 @@ from fastapi import APIRouter, Depends, File, Query, UploadFile, status
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 
+from app.ai.embedding_service import (
+    EmbeddingGenerationError,
+    cosine_similarity_score,
+    get_or_generate_embedding,
+    text_hash,
+)
 from app.api.deps import AppError, get_current_user, require_role
+from app.api.resumes import _run_resume_parse
 from app.core.config import settings
 from app.database.connection import get_db
 from app.models.models import Company, Job, JobStatus, Resume, Student, User, UserRole
@@ -24,7 +31,10 @@ from app.schemas.student import (
     CompanyBrief,
     JobEligibilityInfo,
     PaginatedJobsResponse,
+    ParsedResumeResponse,
     ResumeInfo,
+    RecommendedJobItem,
+    RecommendedJobsResponse,
     StudentJobDetailResponse,
     StudentJobListItem,
     StudentProfileResponse,
@@ -113,6 +123,8 @@ def get_student_profile(
             file_path=primary_resume.file_path,
             is_primary=primary_resume.is_primary,
             uploaded_at=primary_resume.uploaded_at,
+            parsing_status=primary_resume.parsing_status,
+            parsed_data=primary_resume.parsed_data,
         )
 
     profile_data = StudentProfileResponse(
@@ -212,6 +224,8 @@ def update_student_profile(
             file_path=primary_resume.file_path,
             is_primary=primary_resume.is_primary,
             uploaded_at=primary_resume.uploaded_at,
+            parsing_status=primary_resume.parsing_status,
+            parsed_data=primary_resume.parsed_data,
         )
 
     profile_data = StudentProfileResponse(
@@ -319,17 +333,34 @@ async def upload_resume(
     # Set any existing resumes for this student to non-primary
     db.query(Resume).filter(Resume.student_id == student.id).update({"is_primary": False})
 
-    # Create new Resume record
+    # Create new Resume record (parsing_status starts as "pending")
     new_resume = Resume(
         student_id=student.id,
         file_path=file_path,
         original_filename=filename,
         is_primary=True,
         uploaded_at=datetime.utcnow(),
+        parsing_status="pending",
     )
     db.add(new_resume)
     db.commit()
     db.refresh(new_resume)
+
+    # --- Trigger AI parsing inline (never raises; failures stored on the row) ---
+    _run_resume_parse(new_resume, db)
+    db.refresh(new_resume)
+    # --------------------------------------------------------------------------
+
+    # Build parse-aware success message
+    if new_resume.parsing_status == "success":
+        upload_msg = "Resume uploaded and parsed successfully."
+    elif new_resume.parsing_status == "failed":
+        upload_msg = (
+            "Resume uploaded successfully. "
+            "Automatic parsing was unavailable — you can enter your details manually."
+        )
+    else:
+        upload_msg = "Resume uploaded successfully."
 
     resume_data = ResumeInfo(
         id=new_resume.id,
@@ -337,12 +368,14 @@ async def upload_resume(
         file_path=new_resume.file_path,
         is_primary=new_resume.is_primary,
         uploaded_at=new_resume.uploaded_at,
+        parsing_status=new_resume.parsing_status,
+        parsed_data=new_resume.parsed_data,
     )
 
     return APIResponse(
         success=True,
         data=resume_data,
-        message="Resume uploaded successfully.",
+        message=upload_msg,
     )
 
 
@@ -366,12 +399,59 @@ def get_current_resume(
             file_path=primary_resume.file_path,
             is_primary=primary_resume.is_primary,
             uploaded_at=primary_resume.uploaded_at,
+            parsing_status=primary_resume.parsing_status,
+            parsed_data=primary_resume.parsed_data,
         )
 
     return APIResponse(
         success=True,
         data=resume_data,
         message="Resume retrieved successfully.",
+    )
+
+
+@router.get(
+    "/me/parsed-resume",
+    response_model=APIResponse[ParsedResumeResponse],
+    summary="Get parsed data from student's primary resume (for profile prefill)",
+)
+def get_parsed_resume(
+    current_user: User = Depends(require_role(UserRole.STUDENT)),
+    db: Session = Depends(get_db),
+):
+    """
+    Returns the structured data extracted from the student's primary resume,
+    along with the parsing_status so the frontend can decide which UI to render.
+
+    - parsing_status == "success"  → parsed_data contains skills/education/etc.
+    - parsing_status == "failed"   → parsed_data is null; show manual-entry prompt.
+    - parsing_status == "pending"  → parsing hasn't run yet.
+    - No primary resume            → all fields are null.
+    """
+    student = _get_or_create_student(current_user, db)
+    primary_resume = _get_primary_resume(student.id, db)
+
+    if not primary_resume:
+        return APIResponse(
+            success=True,
+            data=ParsedResumeResponse(
+                resume_id=None,
+                parsing_status=None,
+                parsing_error=None,
+                parsed_data=None,
+            ),
+            message="No resume found for this student.",
+        )
+
+    return APIResponse(
+        success=True,
+        data=ParsedResumeResponse(
+            resume_id=primary_resume.id,
+            parsing_status=primary_resume.parsing_status,
+            parsing_error=primary_resume.parsing_error,
+            parsed_data=primary_resume.parsed_data,
+        ),
+        message="Parsed resume data retrieved successfully.",
     )
 
 
@@ -540,4 +620,236 @@ def get_student_job_detail(
         success=True,
         data=job_data,
         message="Job details retrieved successfully.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Recommended Jobs: GET /students/recommended-jobs
+# ---------------------------------------------------------------------------
+
+
+def _build_job_text(job: Job) -> str:
+    """Concatenate the key textual fields of a job for embedding."""
+    parts = [job.title or ""]
+    if job.description:
+        parts.append(job.description)
+    if job.required_skills:
+        skills = job.required_skills
+        if isinstance(skills, list):
+            parts.append(" ".join(str(s) for s in skills))
+    if job.preferred_skills:
+        pskills = job.preferred_skills
+        if isinstance(pskills, list):
+            parts.append(" ".join(str(s) for s in pskills))
+    if job.requirements:
+        reqs = job.requirements
+        if isinstance(reqs, list):
+            parts.append(" ".join(str(r) for r in reqs))
+    return " ".join(p.strip() for p in parts if p.strip())
+
+
+@router.get(
+    "/recommended-jobs",
+    response_model=APIResponse[RecommendedJobsResponse],
+    summary="Get AI-ranked job recommendations for the logged-in student",
+)
+def get_recommended_jobs(
+    top_n: int = Query(
+        None,
+        ge=1,
+        le=50,
+        description="Override the default number of top recommendations to return.",
+    ),
+    current_user: User = Depends(require_role(UserRole.STUDENT)),
+    db: Session = Depends(get_db),
+):
+    """
+    Returns up to *top_n* OPEN jobs ranked by semantic similarity to the
+    student's primary resume embedding.  Each result includes:
+
+    - ``semantic_score`` (0-100) — how closely the job matches the resume.
+    - ``eligibility`` — the result of the hard eligibility check (CGPA /
+      branch / backlogs / batch), computed independently and NEVER overridden
+      by the semantic score.  A job can be highly recommended yet still
+      NOT ELIGIBLE, or vice-versa.
+
+    If the student has no primary resume (or no extractable text), the
+    endpoint returns an empty list with a prompt to upload their resume.
+    Embeddings are cached on the Resume and Job rows and only recomputed
+    when the underlying text changes.
+    """
+    limit = top_n or settings.RECOMMENDATION_TOP_N
+    student = _get_or_create_student(current_user, db)
+
+    # ── 1. Fetch the student's primary resume and its embedding ────────────
+    primary_resume = _get_primary_resume(student.id, db)
+
+    if not primary_resume or not primary_resume.extracted_text:
+        return APIResponse(
+            success=True,
+            data=RecommendedJobsResponse(
+                items=[],
+                has_resume=False,
+                message=(
+                    "Upload your resume to see personalised job recommendations "
+                    "tailored to your skills and experience."
+                ),
+            ),
+            message="No resume found — upload one to get personalised recommendations.",
+        )
+
+    resume_text = primary_resume.extracted_text
+    resume_text_hash = text_hash(resume_text)
+
+    # Get-or-generate the resume embedding (cached on the Resume row).
+    try:
+        resume_embedding, resume_regenerated = get_or_generate_embedding(
+            text=resume_text,
+            cached_embedding=primary_resume.embedding,
+            cached_text_hash=primary_resume.embedding_hash,
+            current_text_hash=resume_text_hash,
+        )
+    except EmbeddingGenerationError as exc:
+        logger.warning(
+            "Could not generate resume embedding for student_id=%s: %s",
+            student.id,
+            exc,
+        )
+        return APIResponse(
+            success=True,
+            data=RecommendedJobsResponse(
+                items=[],
+                has_resume=True,
+                message=(
+                    "We were unable to analyse your resume at this time. "
+                    "Please try again later, or enter your details manually."
+                ),
+            ),
+            message="Resume embedding unavailable.",
+        )
+
+    # Persist updated resume embedding if it was regenerated.
+    if resume_regenerated:
+        primary_resume.embedding = resume_embedding
+        primary_resume.embedding_hash = resume_text_hash
+        db.add(primary_resume)
+        db.commit()
+        db.refresh(primary_resume)
+
+    # ── 2. Load all OPEN jobs ──────────────────────────────────────────────
+    open_jobs = (
+        db.query(Job)
+        .options(joinedload(Job.company))
+        .filter(Job.status == JobStatus.OPEN)
+        .all()
+    )
+
+    if not open_jobs:
+        return APIResponse(
+            success=True,
+            data=RecommendedJobsResponse(
+                items=[],
+                has_resume=True,
+                message="There are currently no open job postings to recommend.",
+            ),
+            message="No open jobs available.",
+        )
+
+    # ── 3. Score each job against the resume embedding ─────────────────────
+    scored: list[tuple[float, Job, list[float]]] = []
+
+    for job in open_jobs:
+        job_text = _build_job_text(job)
+        if not job_text.strip():
+            # Skip jobs with no textual content to embed.
+            continue
+
+        job_text_hash = text_hash(job_text)
+
+        try:
+            job_embedding, job_regenerated = get_or_generate_embedding(
+                text=job_text,
+                cached_embedding=job.embedding,
+                cached_text_hash=job.embedding_hash,
+                current_text_hash=job_text_hash,
+            )
+        except EmbeddingGenerationError:
+            logger.debug("Skipping job_id=%s — embedding failed.", job.id)
+            continue
+
+        # Persist updated job embedding if regenerated.
+        if job_regenerated:
+            job.embedding = job_embedding
+            job.embedding_hash = job_text_hash
+            db.add(job)
+
+        try:
+            sim = cosine_similarity_score(resume_embedding, job_embedding)
+        except ValueError:
+            continue
+
+        scored.append((sim, job, job_embedding))
+
+    # Flush any updated job embeddings in one batch.
+    db.commit()
+
+    # Sort descending by similarity, take top-N.
+    scored.sort(key=lambda t: t[0], reverse=True)
+    top_scored = scored[:limit]
+
+    # ── 4. Build response — eligibility is computed independently ──────────
+    items: list[RecommendedJobItem] = []
+    for sim_score, job, _job_emb in top_scored:
+        # Hard eligibility check — NEVER derived from or overridden by semantic score.
+        elig_dict = check_eligibility(student, job)
+        eligibility_info = JobEligibilityInfo(
+            eligible=elig_dict.get("eligible", False),
+            reasons=elig_dict.get("reasons", []),
+        )
+
+        company_brief = None
+        if job.company:
+            company_brief = CompanyBrief(
+                id=job.company.id,
+                name=job.company.name,
+                website=job.company.website,
+                industry=job.company.industry,
+                logo_url=job.company.logo_url,
+            )
+
+        items.append(
+            RecommendedJobItem(
+                id=job.id,
+                title=job.title,
+                company=company_brief,
+                location=job.location,
+                package_lpa=job.package_lpa,
+                status=job.status.value if hasattr(job.status, "value") else str(job.status),
+                deadline=job.deadline,
+                min_cgpa=job.min_cgpa,
+                allowed_branches=job.allowed_branches,
+                maximum_backlogs=job.maximum_backlogs,
+                eligible_batch=job.eligible_batch,
+                required_skills=job.required_skills,
+                created_at=job.created_at,
+                # Semantic score (0-100): how relevant this job is to the resume.
+                # This is SEPARATE from eligibility — a high score does NOT imply eligible.
+                semantic_score=round(sim_score, 2),
+                # Hard eligibility result — entirely independent of semantic_score.
+                eligibility=eligibility_info,
+            )
+        )
+
+    return APIResponse(
+        success=True,
+        data=RecommendedJobsResponse(
+            items=items,
+            has_resume=True,
+            message=(
+                f"Showing top {len(items)} job recommendations based on your resume."
+                if items
+                else "No jobs could be scored against your resume at this time."
+            ),
+        ),
+        message="Recommended jobs retrieved successfully.",
     )

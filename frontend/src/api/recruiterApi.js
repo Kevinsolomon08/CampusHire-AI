@@ -70,16 +70,62 @@ export const getJobApplicants = async ({
   max_backlogs = null,
   batch = null,
   status = '',
-  sort_by = 'applied_at',
+  min_ai_score = null,
+  sort_by = 'rank',
 } = {}) => {
   const params = { page, page_size, sort_by }
   if (branch) params.branch = branch
-  if (min_cgpa !== null) params.min_cgpa = min_cgpa
-  if (max_backlogs !== null) params.max_backlogs = max_backlogs
-  if (batch !== null) params.batch = batch
+  if (min_cgpa !== null && min_cgpa !== '') params.min_cgpa = min_cgpa
+  if (max_backlogs !== null && max_backlogs !== '') params.max_backlogs = max_backlogs
+  if (batch !== null && batch !== '') params.batch = batch
   if (status) params.status = status
+  if (min_ai_score !== null && min_ai_score !== '') params.min_ai_score = min_ai_score
   const response = await client.get(`/applications/jobs/${jobId}/applications`, { params })
   return response.data
+}
+
+export const recalculateJobScores = async (jobId) => {
+  const response = await client.post(`/applications/jobs/${jobId}/recalculate-scores`)
+  return response.data
+}
+
+export const getApplicationMatchAnalysis = async (applicationId) => {
+  const response = await client.get(`/applications/${applicationId}/match-analysis`)
+  return response.data
+}
+
+export const exportJobApplicantsCsv = async ({ jobId, topK = null }) => {
+  const params = { format: 'csv' }
+  if (topK !== null && topK !== undefined && topK !== '') {
+    params.top_k = parseInt(topK)
+  }
+  const response = await client.get(`/applications/jobs/${jobId}/applications/export`, {
+    params,
+    responseType: 'blob',
+  })
+
+  // Extract filename from Content-Disposition header if available
+  let filename = `job_${jobId}_top_candidates.csv`
+  const disposition = response.headers['content-disposition'] || response.headers['Content-Disposition']
+  if (disposition && disposition.includes('filename=')) {
+    const match = disposition.match(/filename="?([^";]+)"?/)
+    if (match && match[1]) {
+      filename = match[1]
+    }
+  }
+
+  // Create temporary URL and trigger browser download
+  const blob = new Blob([response.data], { type: 'text/csv;charset=utf-8;' })
+  const url = window.URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.setAttribute('download', filename)
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  window.URL.revokeObjectURL(url)
+
+  return true
 }
 
 export const updateApplicationStatus = async (applicationId, newStatus, remarks = null) => {

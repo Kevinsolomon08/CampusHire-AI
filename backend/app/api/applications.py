@@ -3,15 +3,24 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import logging
 import math
+import re
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query, status
-from sqlalchemy import and_, or_
+from fastapi import APIRouter, Depends, Query, Response, status
+from sqlalchemy import and_, case, or_
 from sqlalchemy.orm import Session, joinedload
 
+from app.ai.scoring_engine import (
+    calculate_education_relevance,
+    calculate_experience_relevance,
+    calculate_skill_match,
+    score_and_rank_job_applicants,
+)
 from app.api.deps import AppError, get_current_user, require_role
 from app.database.connection import get_db
 from app.models.models import (
@@ -34,6 +43,7 @@ from app.schemas.application import (
     ApplicationCreate,
     ApplicationDetailResponse,
     ApplicationListItem,
+    ApplicationMatchAnalysisResponse,
     ApplicationStatusHistoryItem,
     ApplicationStatusUpdateRequest,
     InterviewCreate,
@@ -430,7 +440,8 @@ def get_job_applicants(
     max_backlogs: Optional[int] = Query(None, description="Maximum backlogs"),
     batch: Optional[int] = Query(None, description="Graduating batch"),
     status: Optional[str] = Query(None, description="Filter by application status"),
-    sort_by: str = Query("applied_at", pattern="^(applied_at|cgpa|name)$"),
+    min_ai_score: Optional[float] = Query(None, ge=0.0, le=100.0, description="Minimum AI score"),
+    sort_by: str = Query("rank", pattern="^(rank|applied_at|cgpa|name)$"),
     current_user: User = Depends(require_role(UserRole.RECRUITER)),
     db: Session = Depends(get_db),
 ):
@@ -458,11 +469,26 @@ def get_job_applicants(
             error_code="FORBIDDEN",
         )
 
+    # Automatically score and rank applicants if any eligible applicant has not been scored yet
+    unscored_count = (
+        db.query(Application)
+        .filter(
+            Application.job_id == job_id,
+            Application.ai_score.is_(None),
+        )
+        .count()
+    )
+    if unscored_count > 0:
+        try:
+            score_and_rank_job_applicants(job_id=job_id, db_session=db)
+        except Exception as exc:
+            logger.warning("Automatic scoring for job %s failed: %s", job_id, exc)
+
     # Build query for applications with filters
     query = (
         db.query(Application)
         .options(
-            joinedload(Application.student),
+            joinedload(Application.student).joinedload(Student.user),
             joinedload(Application.job),
         )
         .filter(Application.job_id == job_id)
@@ -483,11 +509,21 @@ def get_job_applicants(
     if batch:
         query = query.join(Student).filter(Student.year == batch)
 
+    if min_ai_score is not None:
+        query = query.filter(Application.ai_score >= min_ai_score)
+
     # Sort
-    if sort_by == "cgpa":
+    if sort_by == "rank":
+        # Rank 1 first; null ranks last, then tie-break by applied_at desc
+        query = query.order_by(
+            case((Application.rank.is_(None), 1), else_=0),
+            Application.rank.asc(),
+            Application.applied_at.desc(),
+        )
+    elif sort_by == "cgpa":
         query = query.join(Student).order_by(Student.cgpa.desc())
     elif sort_by == "name":
-        query = query.join(User).order_by(User.full_name.asc())
+        query = query.join(Student).join(User).order_by(User.full_name.asc())
     else:  # applied_at
         query = query.order_by(Application.applied_at.desc())
 
@@ -502,15 +538,19 @@ def get_job_applicants(
             ApplicantListItem(
                 application_id=app.id,
                 student_id=app.student_id,
-                student_name=app.student.user.full_name,
-                student_email=app.student.user.email,
-                roll_number=app.student.roll_number,
-                branch=app.student.branch,
-                cgpa=app.student.cgpa,
-                backlog_count=app.student.backlog_count,
+                student_name=app.student.user.full_name if app.student and app.student.user else "Unknown",
+                student_email=app.student.user.email if app.student and app.student.user else "",
+                roll_number=app.student.roll_number if app.student else "",
+                branch=app.student.branch if app.student else "",
+                cgpa=app.student.cgpa if app.student else None,
+                backlog_count=app.student.backlog_count if app.student else 0,
                 status=app.status.value if hasattr(app.status, "value") else str(app.status),
                 applied_at=app.applied_at,
                 ai_score=app.ai_score,
+                semantic_score=app.semantic_score,
+                skill_score=app.skill_score,
+                experience_score=app.experience_score,
+                education_score=app.education_score,
                 rank=app.rank,
             )
         )
@@ -525,6 +565,324 @@ def get_job_applicants(
             total_pages=total_pages,
         ),
         message="Applicants retrieved successfully.",
+    )
+
+
+@router.post(
+    "/jobs/{job_id}/recalculate-scores",
+    response_model=APIResponse[dict],
+    summary="Trigger recalculation of AI scores and ranking for a job",
+)
+def recalculate_job_scores(
+    job_id: int,
+    current_user: User = Depends(require_role(UserRole.RECRUITER, UserRole.PLACEMENT_OFFICER)),
+    db: Session = Depends(get_db),
+):
+    # Verify recruiter owns the job if recruiter
+    if current_user.role == UserRole.RECRUITER:
+        recruiter = db.query(Recruiter).filter(Recruiter.user_id == current_user.id).first()
+        if not recruiter:
+            raise AppError(
+                status_code=status.HTTP_404_NOT_FOUND,
+                message="Recruiter profile not found.",
+                error_code="RECRUITER_NOT_FOUND",
+            )
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if not job:
+            raise AppError(
+                status_code=status.HTTP_404_NOT_FOUND,
+                message="Job posting not found.",
+                error_code="JOB_NOT_FOUND",
+            )
+        if job.company_id != recruiter.company_id:
+            raise AppError(
+                status_code=status.HTTP_403_FORBIDDEN,
+                message="You are not authorized to recalculate scores for this job.",
+                error_code="FORBIDDEN",
+            )
+    else:
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if not job:
+            raise AppError(
+                status_code=status.HTTP_404_NOT_FOUND,
+                message="Job posting not found.",
+                error_code="JOB_NOT_FOUND",
+            )
+
+    ranked = score_and_rank_job_applicants(job_id=job_id, db_session=db)
+    return APIResponse(
+        success=True,
+        data={"scored_count": len(ranked), "job_id": job_id},
+        message="Applicant scores and rankings recalculated successfully.",
+    )
+
+
+@router.get(
+    "/jobs/{job_id}/applications/export",
+    summary="Export top-k or all eligible applicants for a job as CSV",
+)
+@router.get(
+    "/jobs/{job_id}/export",
+    summary="Export top-k or all eligible applicants for a job as CSV (short alias)",
+)
+def export_job_applicants_csv(
+    job_id: int,
+    top_k: Optional[int] = Query(None, ge=1, description="Number of top candidates to export"),
+    format: str = Query("csv", pattern="^csv$", description="Export format (csv)"),
+    current_user: User = Depends(require_role(UserRole.RECRUITER, UserRole.PLACEMENT_OFFICER)),
+    db: Session = Depends(get_db),
+):
+    # Verify recruiter owns the job if recruiter
+    if current_user.role == UserRole.RECRUITER:
+        recruiter = db.query(Recruiter).filter(Recruiter.user_id == current_user.id).first()
+        if not recruiter:
+            raise AppError(
+                status_code=status.HTTP_404_NOT_FOUND,
+                message="Recruiter profile not found.",
+                error_code="RECRUITER_NOT_FOUND",
+            )
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if not job:
+            raise AppError(
+                status_code=status.HTTP_404_NOT_FOUND,
+                message="Job posting not found.",
+                error_code="JOB_NOT_FOUND",
+            )
+        if job.company_id != recruiter.company_id:
+            raise AppError(
+                status_code=status.HTTP_403_FORBIDDEN,
+                message="You are not authorized to export applicants for this job.",
+                error_code="FORBIDDEN",
+            )
+    else:
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if not job:
+            raise AppError(
+                status_code=status.HTTP_404_NOT_FOUND,
+                message="Job posting not found.",
+                error_code="JOB_NOT_FOUND",
+            )
+
+    # Automatically score and rank applicants if any eligible applicant has not been scored yet
+    unscored_count = (
+        db.query(Application)
+        .filter(
+            Application.job_id == job_id,
+            Application.ai_score.is_(None),
+        )
+        .count()
+    )
+    if unscored_count > 0:
+        try:
+            score_and_rank_job_applicants(job_id=job_id, db_session=db)
+        except Exception as exc:
+            logger.warning("Automatic scoring for export on job %s failed: %s", job_id, exc)
+
+    # Query applicants sorted by rank ascending (best first), nulls last, then applied_at desc
+    query = (
+        db.query(Application)
+        .options(
+            joinedload(Application.student).joinedload(Student.user),
+            joinedload(Application.resume),
+            joinedload(Application.job),
+        )
+        .filter(Application.job_id == job_id)
+        .order_by(
+            case((Application.rank.is_(None), 1), else_=0),
+            Application.rank.asc(),
+            Application.applied_at.desc(),
+        )
+    )
+
+    if top_k is not None:
+        applications = query.limit(top_k).all()
+    else:
+        applications = query.all()
+
+    # If the job has zero eligible/scored applicants yet, return a clear error
+    if not applications:
+        raise AppError(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            message="No scored applicants available to export yet.",
+            error_code="NO_APPLICANTS_TO_EXPORT",
+        )
+
+    # Prepare CSV output
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    # CSV headers in exact required order
+    writer.writerow([
+        "Rank",
+        "Candidate Name",
+        "Email",
+        "Phone",
+        "Department",
+        "Batch",
+        "CGPA",
+        "Backlogs",
+        "AI Score",
+        "Semantic Similarity",
+        "Skill Match %",
+        "Matching Skills",
+        "Missing Required Skills",
+        "Application Status",
+        "Applied Date",
+    ])
+
+    req_skills = job.required_skills if isinstance(job.required_skills, list) else []
+    pref_skills = job.preferred_skills if isinstance(job.preferred_skills, list) else []
+
+    for app in applications:
+        student = app.student
+        user = student.user if student else None
+        resume = app.resume
+        parsed_data = (resume.parsed_data if resume and isinstance(resume.parsed_data, dict) else {}) or {}
+
+        # Candidate skills for matching/missing lists
+        cand_skills = parsed_data.get("skills")
+        if not cand_skills and student and student.skills:
+            cand_skills = student.skills if isinstance(student.skills, list) else []
+        cand_skills = cand_skills or []
+
+        skill_res = calculate_skill_match(cand_skills, req_skills, pref_skills)
+        matching_skills_str = "; ".join(skill_res["matching_skills"])
+        missing_skills_str = "; ".join(skill_res["missing_required_skills"])
+
+        # Candidate phone
+        phone = ""
+        if parsed_data.get("personal_info") and isinstance(parsed_data["personal_info"], dict):
+            phone = parsed_data["personal_info"].get("phone") or ""
+        if not phone and user and hasattr(user, "phone"):
+            phone = getattr(user, "phone") or ""
+
+        writer.writerow([
+            str(app.rank) if app.rank is not None else "",
+            user.full_name if user else "Unknown",
+            user.email if user else "",
+            phone,
+            student.branch if student else "",
+            str(student.year) if student and student.year else "",
+            f"{student.cgpa:.2f}" if student and student.cgpa is not None else "",
+            str(student.backlog_count) if student and student.backlog_count is not None else "0",
+            f"{app.ai_score:.1f}%" if app.ai_score is not None else "",
+            f"{app.semantic_score:.1f}%" if app.semantic_score is not None else "",
+            f"{app.skill_score:.1f}%" if app.skill_score is not None else (f"{skill_res['skill_match_percentage']:.1f}%" if skill_res else ""),
+            matching_skills_str,
+            missing_skills_str,
+            app.status.value if hasattr(app.status, "value") else str(app.status),
+            app.applied_at.strftime("%Y-%m-%d %H:%M:%S") if app.applied_at else "",
+        ])
+
+    csv_content = output.getvalue()
+
+    # Sanitize job title for safe filename
+    sanitized_title = re.sub(r"[^a-zA-Z0-9_-]", "_", job.title.strip().lower())
+    top_str = str(top_k) if top_k else "all"
+    filename = f"{sanitized_title}_top_{top_str}_candidates.csv"
+
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Type": "text/csv; charset=utf-8",
+        },
+    )
+
+
+@router.get(
+    "/{id}/match-analysis",
+    response_model=APIResponse[ApplicationMatchAnalysisResponse],
+    summary="Get detailed AI match analysis breakdown for an applicant",
+)
+def get_application_match_analysis(
+    id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    app = (
+        db.query(Application)
+        .options(
+            joinedload(Application.student).joinedload(Student.user),
+            joinedload(Application.job).joinedload(Job.company),
+            joinedload(Application.resume),
+        )
+        .filter(Application.id == id)
+        .first()
+    )
+    if not app:
+        raise AppError(
+            status_code=status.HTTP_404_NOT_FOUND,
+            message="Application not found.",
+            error_code="APPLICATION_NOT_FOUND",
+        )
+
+    # Authorization
+    if current_user.role == UserRole.STUDENT:
+        student = db.query(Student).filter(Student.user_id == current_user.id).first()
+        if not student or app.student_id != student.id:
+            raise AppError(
+                status_code=status.HTTP_403_FORBIDDEN,
+                message="You are not authorized to view this analysis.",
+                error_code="FORBIDDEN",
+            )
+    elif current_user.role == UserRole.RECRUITER:
+        recruiter = db.query(Recruiter).filter(Recruiter.user_id == current_user.id).first()
+        if not recruiter or app.job.company_id != recruiter.company_id:
+            raise AppError(
+                status_code=status.HTTP_403_FORBIDDEN,
+                message="You are not authorized to view this analysis.",
+                error_code="FORBIDDEN",
+            )
+
+    # Check eligibility
+    eligibility_result = check_eligibility(app.student, app.job)
+
+    # Candidate skills & breakdown
+    resume = app.resume
+    student = app.student
+    job = app.job
+
+    parsed_data = (resume.parsed_data if resume and isinstance(resume.parsed_data, dict) else {}) or {}
+
+    cand_skills = parsed_data.get("skills")
+    if not cand_skills and student and student.skills:
+        cand_skills = student.skills if isinstance(student.skills, list) else []
+    cand_skills = cand_skills or []
+
+    req_skills = job.required_skills if isinstance(job.required_skills, list) else []
+    pref_skills = job.preferred_skills if isinstance(job.preferred_skills, list) else []
+    skill_res = calculate_skill_match(cand_skills, req_skills, pref_skills)
+
+    scoring_available = app.ai_score is not None
+
+    return APIResponse(
+        success=True,
+        data=ApplicationMatchAnalysisResponse(
+            application_id=app.id,
+            student_id=app.student_id,
+            candidate_name=app.student.user.full_name if app.student and app.student.user else "Unknown",
+            candidate_email=app.student.user.email if app.student and app.student.user else "",
+            roll_number=app.student.roll_number if app.student else "",
+            branch=app.student.branch if app.student else "",
+            cgpa=app.student.cgpa if app.student else None,
+            job_id=job.id,
+            job_title=job.title,
+            overall_score=app.ai_score,
+            semantic_similarity=app.semantic_score,
+            skill_match_percentage=app.skill_score if app.skill_score is not None else skill_res["skill_match_percentage"],
+            experience_relevance=app.experience_score,
+            education_relevance=app.education_score,
+            matching_skills=skill_res["matching_skills"],
+            missing_required_skills=skill_res["missing_required_skills"],
+            matching_preferred_skills=skill_res["matching_preferred_skills"],
+            rank=app.rank,
+            eligibility=eligibility_result,
+            status=app.status.value if hasattr(app.status, "value") else str(app.status),
+            scoring_available=scoring_available,
+        ),
+        message="Match analysis retrieved successfully.",
     )
 
 

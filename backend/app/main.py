@@ -19,6 +19,7 @@ from app.api.jobs import router as jobs_router
 from app.api.admin import router as admin_router
 from app.api.notifications import router as notifications_router
 from app.api.recruiters import router as recruiters_router
+from app.api.resumes import router as resumes_router
 from app.api.students import router as students_router
 from app.core.config import settings
 
@@ -160,4 +161,5 @@ app.include_router(notifications_router, prefix="/api/v1/notifications", tags=["
 app.include_router(admin_router, prefix="/admin", tags=["Admin"])
 app.include_router(admin_router, prefix="/api/v1/admin", tags=["Admin"])
 
-
+app.include_router(resumes_router, prefix="/resumes", tags=["Resumes"])
+app.include_router(resumes_router, prefix="/api/v1/resumes", tags=["Resumes"])

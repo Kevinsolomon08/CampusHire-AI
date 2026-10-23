@@ -29,6 +29,16 @@ export const getStudentResume = async () => {
   return response.data
 }
 
+export const getParsedResume = async () => {
+  const response = await client.get('/students/me/parsed-resume')
+  return response.data
+}
+
+export const triggerResumeParse = async (resumeId) => {
+  const response = await client.post(`/resumes/${resumeId}/parse`)
+  return response.data
+}
+
 export const getStudentJobs = async ({ page = 1, page_size = 10, search = '' } = {}) => {
   const params = { page, page_size }
   if (search) params.search = search
@@ -79,5 +89,17 @@ export const markNotificationRead = async (notificationId) => {
 
 export const getUnreadNotificationCount = async () => {
   const response = await client.get('/notifications/unread/count')
+  return response.data
+}
+
+/**
+ * Fetch AI-ranked job recommendations for the logged-in student.
+ * @param {number|null} topN  Optional override for number of results (1–50).
+ * @returns {Promise<{success, data: {items, has_resume, message}}>}
+ */
+export const getRecommendedJobs = async (topN = null) => {
+  const params = {}
+  if (topN) params.top_n = topN
+  const response = await client.get('/students/recommended-jobs', { params })
   return response.data
 }

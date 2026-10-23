@@ -212,33 +212,67 @@ export default function StudentApplicationDetailPage() {
       </div>
 
       {/* AI Scoring Placeholders */}
-      <div className="p-6 rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 shadow-sm">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-bold text-gray-900 dark:text-white">
-            AI Resume & Match Evaluation
+      {/* AI Resume & Match Evaluation */}
+      <div className="p-6 rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 shadow-sm space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-bold text-gray-900 dark:text-white flex items-center gap-2">
+            <span>⚡</span> AI Resume & Match Evaluation
           </h2>
-          <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-800">
-            Phase 2 Planned
+          <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800">
+            Active
           </span>
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+
+        {/* AI Disclaimer */}
+        <div className="p-3 rounded-xl border border-indigo-100 dark:border-indigo-900/60 bg-indigo-50/70 dark:bg-indigo-950/30 text-indigo-900 dark:text-indigo-200 text-xs">
+          💡 AI scores are a screening aid to help prioritize review — they don't represent a hiring decision. Final selection is always the recruiter's call.
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <div className="p-4 rounded-xl bg-indigo-50/50 dark:bg-indigo-950/30 border border-indigo-100 dark:border-indigo-900/50">
             <p className="text-xs uppercase tracking-wider text-indigo-600 dark:text-indigo-400 font-bold">
-              Skill & Semantic Score
+              Overall Composite Score
             </p>
-            <p className="text-lg font-bold text-indigo-900 dark:text-indigo-300 mt-2 flex items-center gap-2">
-              <span className="inline-block w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
-              {application.ai_score ? `${application.ai_score.toFixed(1)}%` : 'Pending AI analysis'}
+            <p className="text-2xl font-extrabold text-indigo-900 dark:text-indigo-200 mt-1">
+              {application.ai_score !== null && application.ai_score !== undefined
+                ? `${application.ai_score.toFixed(1)}%`
+                : 'Pending analysis'}
             </p>
+            <p className="text-[10px] text-gray-500 dark:text-gray-400 mt-0.5">Weighted match score</p>
           </div>
+
           <div className="p-4 rounded-xl bg-purple-50/50 dark:bg-purple-950/30 border border-purple-100 dark:border-purple-900/50">
             <p className="text-xs uppercase tracking-wider text-purple-600 dark:text-purple-400 font-bold">
               Applicant Rank
             </p>
-            <p className="text-lg font-bold text-purple-900 dark:text-purple-300 mt-2 flex items-center gap-2">
-              <span className="inline-block w-2 h-2 rounded-full bg-purple-400 animate-pulse" />
-              {application.rank ? `#${application.rank}` : 'Pending AI analysis'}
+            <p className="text-2xl font-extrabold text-purple-900 dark:text-purple-200 mt-1">
+              {application.rank ? `#${application.rank}` : '—'}
             </p>
+            <p className="text-[10px] text-gray-500 dark:text-gray-400 mt-0.5">Among all applicants</p>
+          </div>
+
+          <div className="p-4 rounded-xl bg-emerald-50/50 dark:bg-emerald-950/30 border border-emerald-100 dark:border-emerald-900/50">
+            <p className="text-xs uppercase tracking-wider text-emerald-600 dark:text-emerald-400 font-bold">
+              Skill Match
+            </p>
+            <p className="text-2xl font-extrabold text-emerald-900 dark:text-emerald-200 mt-1">
+              {application.skill_score !== null && application.skill_score !== undefined
+                ? `${application.skill_score.toFixed(1)}%`
+                : '—'}
+            </p>
+            <p className="text-[10px] text-gray-500 dark:text-gray-400 mt-0.5">Required & preferred skills</p>
+          </div>
+
+          <div className="p-4 rounded-xl bg-amber-50/50 dark:bg-amber-950/30 border border-amber-100 dark:border-amber-900/50">
+            <p className="text-xs uppercase tracking-wider text-amber-600 dark:text-amber-400 font-bold">
+              Semantic Fit
+            </p>
+            <p className="text-2xl font-extrabold text-amber-900 dark:text-amber-200 mt-1">
+              {application.semantic_score !== null && application.semantic_score !== undefined
+                ? `${application.semantic_score.toFixed(1)}%`
+                : '—'}
+            </p>
+            <p className="text-[10px] text-gray-500 dark:text-gray-400 mt-0.5">Resume & job description</p>
           </div>
         </div>
       </div>

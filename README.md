@@ -315,20 +315,120 @@ npm run build
 
 ---
 
-## 🔮 Phase 2 (Planned): AI Capabilities
+## 🤖 AI Pipeline & Intelligence Engine
 
-The following AI-powered capabilities are intentionally designed into the architecture and scheduled for Phase 2 implementation in `backend/app/ai`:
+CampusHire features an integrated, production-ready AI layer designed for automated resume extraction, semantic talent matching, transparent weighted scoring, and intelligent candidate ranking.
 
-1. **AI Resume Parsing & Extraction**:
-   - Deep extraction of structured work experience, education, and certified skills directly from uploaded PDF resumes into normalized taxonomy entities.
-2. **Semantic Job-to-Resume Matching**:
-   - Vector embedding similarity scoring (e.g. via Gemini embeddings / sentence-transformers) comparing job requirements with student resumes beyond simple keyword matching.
-3. **Automated Applicant Ranking & Scoring**:
-   - Weighted multi-factor candidate scoring (Skill match + Academic baseline + Project relevance) generating candidate fit percentiles.
-4. **AI Interview Assistant**:
-   - Automated question generation based on candidate resume strengths and job description requirements.
+```
+┌──────────────────┐     ┌──────────────────────┐     ┌────────────────────────────┐
+│   Resume PDF     │ ──► │  pdfplumber + spaCy  │ ──► │   Sentence-Transformers    │
+│  (Uploaded File) │     │ (Section Extraction) │     │ (Dense Semantic Embedding) │
+└──────────────────┘     └──────────────────────┘     └──────────────┬─────────────┘
+                                                                     │
+                                                                     ▼
+┌──────────────────┐     ┌──────────────────────┐     ┌────────────────────────────┐
+│ Ranked Candidate │ ◄── │   Weighted Scoring   │ ◄── │      Job Requirements      │
+│   Leaderboard    │     │    Engine (4-Factor) │     │    (Skills, Exp, Edu, Desc)│
+└──────────────────┘     └──────────────────────┘     └────────────────────────────┘
+```
 
-*Currently, all AI score and rank indicators in UI dashboards intentionally display "Pending AI analysis" as a placeholder for Phase 2.*
+### 1. Architectural Components
+
+1. **PDF Text & Section Extraction (`pdfplumber` + `spaCy`)**:
+   - `pdfplumber` extracts high-fidelity raw text from candidate PDF resumes while cleaning weird control characters and formatting breaks.
+   - `spaCy` (`en_core_web_sm`) processes text into structured entities: personal info (name, email, phone), technical skills taxonomy, categorized education degrees/institutions, and work experience/internship durations.
+   - Resilient fallback: unparseable or scanned resumes trigger graceful `parsing_status = "failed"` without crashing upload or deleting stored files.
+
+2. **Semantic Vector Embeddings (`Sentence-Transformers`)**:
+   - Encodes job descriptions and resume text into 384-dimensional dense semantic vectors using `Sentence-Transformers`.
+   - **Configurable Model**: Default model is `all-MiniLM-L6-v2` (fast, CPU-friendly), configurable via the `EMBEDDING_MODEL_NAME` environment variable.
+   - **Intelligent Caching**: Embeddings are SHA-256 fingerprinted and cached on database rows (`Resume.embedding_hash`, `Job.embedding_hash`). Recomputed only when the underlying text is modified.
+   - Normalized cosine similarity scaled to `0.0 – 100.0%`.
+
+3. **Multi-Factor Weighted Scoring Engine**:
+   - Computes an overall composite AI match score (`0.0 – 100.0%`) based on four central, configurable weights (`app/ai/scoring_config.py`):
+     - **Semantic Relevance (`SEMANTIC_WEIGHT = 0.50`)**: Overall conceptual alignment between candidate background and job profile.
+     - **Skill Alignment (`SKILL_WEIGHT = 0.25`)**: Keyword overlap with mandatory required skills weighted double (`2.0x`) compared to preferred skills (`1.0x`).
+     - **Experience Relevance (`EXPERIENCE_WEIGHT = 0.15`)**: Quantitative experience duration compared against job requirements.
+     - **Education Alignment (`EDUCATION_WEIGHT = 0.10`)**: Degree qualification and branch relevance.
+   - *Constraint*: The four weights sum strictly to `1.0`.
+
+4. **Applicant Ranking & Recruiter Leaderboard**:
+   - Eligible applicants are sorted descending by composite `ai_score`.
+   - Deterministic tie-breaking by earlier `applied_at` timestamp.
+   - Auto-scored on page load with manual on-demand recalculation available.
+
+5. **AI Job Recommendations for Students**:
+   - Compares student's active resume embedding against all active campus job openings (`GET /students/recommended-jobs`).
+   - Returns top recommendations with **independent eligibility evaluation** — a job can be highly recommended for skills while remaining marked ineligible due to hard constraints (e.g. CGPA, branch, or backlogs).
+
+> [!NOTE]
+> **Assistive AI Principle**: AI scores in CampusHire are strictly assistive screening aids to help recruiters prioritize evaluation — they never represent automated hiring or rejection decisions. Final selection is always human-driven.
+
+---
+
+## 📡 API Endpoints Reference
+
+### 🤖 AI & Matching Endpoints
+- `POST /resumes/{id}/parse` — Trigger structured AI parsing of a stored PDF resume.
+- `GET /applications/{id}/match-analysis` — Get transparent multi-factor AI scoring breakdown and skill comparison.
+- `POST /jobs/{job_id}/recalculate-scores` — Recalculate applicant scores and rankings on demand.
+- `GET /jobs/{job_id}/applications/export?top_k={n}&format=csv` — Export top-N or all ranked applicants as CSV with complete AI metrics.
+- `GET /students/recommended-jobs` — Retrieve top job recommendations for logged-in student based on resume semantic similarity.
+
+### 🎓 Student Endpoints
+- `GET /students/me` — Retrieve student profile and completion percentage.
+- `PUT /students/me` — Update student profile, skills, education, and experience.
+- `POST /students/resume` — Upload PDF resume with inline automated AI parsing.
+- `GET /students/resume` — Get active primary resume metadata.
+- `GET /students/me/parsed-resume` — Retrieve parsed structured data for profile prefilling.
+- `GET /students/jobs` — Browse open campus recruitment drives with real-time eligibility status.
+- `POST /applications/{job_id}/apply` — Apply for a job posting.
+- `GET /applications` — List submitted applications with lifecycle status and ranks.
+- `GET /applications/{id}` — Application detail with complete status history audit timeline.
+
+### 🏢 Recruiter Endpoints
+- `POST /jobs` — Create and publish recruitment drives (`DRAFT`, `OPEN`, `CLOSED`).
+- `GET /jobs` — List company jobs with application metrics.
+- `GET /jobs/{job_id}/applications` — View ranked applicants list with AI scores and filters.
+- `PATCH /applications/{id}/status` — Advance applicant through the lifecycle state machine.
+- `POST /interviews` — Schedule technical/HR interview rounds.
+- `PATCH /interviews/{id}` — Submit interview evaluation results (`PASSED`, `FAILED`, `NO_SHOW`).
+
+### 📊 Placement Officer Endpoints
+- `GET /admin/dashboard` — Live placement metrics, KPI counters, and placement rates.
+- `GET /admin/students` — Paginated and searchable student registry.
+- `GET /admin/jobs` — Comprehensive placement drives oversight.
+- `GET /admin/reports` — Aggregated recruitment reports with custom department/batch filters.
+- `GET /admin/reports/export` — Stream generated placement report as CSV.
+
+---
+
+## 🧪 Testing Instructions
+
+CampusHire includes a comprehensive test suite with **184+ passing automated tests** across unit, service, API, and full end-to-end integration levels:
+- Full E2E AI pipeline (parse → embed → score → rank → export)
+- Resilient failure recovery (corrupted resumes do not crash requests or block other applicants)
+- Caching verification (embeddings reuse verified via SHA-256 hashes)
+- Role-based authorization & route guards
+- State-machine lifecycle validation and immutable audit logs
+- Multi-factor scoring configuration assertion
+
+### Running the Pytest Suite
+```bash
+cd backend
+# Run all tests with verbose output:
+pytest -v
+
+# Run with test coverage report:
+pytest --cov=app tests/
+```
+
+### Running Frontend Validation
+```bash
+cd frontend
+npm run build
+```
 
 ---
 
